@@ -123,15 +123,16 @@ class GraphVisualizer:
                 params = {"user_id": user_id}
 
                 if days_back:
-                    time_filter = f"AND ep.reference_time >= datetime() - duration({{days: {days_back}}})"
+                    time_filter = f"AND ep.valid_at >= datetime() - duration({{days: {days_back}}})"
 
-                # Query episodes and their relationships
+                # Query episodes (Episodic nodes) and their relationships
+                # Graphiti schema: :Episodic nodes, :MENTIONS/:RELATES_TO relationships
                 query = f"""
-                MATCH (ep:Episode)
+                MATCH (ep:Episodic)
                 WHERE ep.group_id = $user_id {time_filter}
-                OPTIONAL MATCH (ep)-[r:MENTIONS|RELATED_TO]-(entity)
+                OPTIONAL MATCH (ep)-[r:MENTIONS]-(entity:Entity)
                 RETURN ep, r, entity
-                ORDER BY ep.reference_time DESC
+                ORDER BY ep.valid_at DESC
                 LIMIT 500
                 """
 
@@ -148,13 +149,20 @@ class GraphVisualizer:
                     rel = record["r"]
                     entity = record["entity"]
 
-                    # Add episode node
+                    # Add episode (Episodic) node
                     ep_id = ep.id
                     if ep_id not in nodes_dict:
+                        # Get valid_at timestamp (Graphiti uses valid_at, not reference_time)
+                        valid_at = ep.get('valid_at', ep.get('created_at', 'unknown'))
+                        if valid_at:
+                            timestamp_str = str(valid_at)[:10]
+                        else:
+                            timestamp_str = 'unknown'
+
                         nodes_dict[ep_id] = {
                             "id": ep_id,
-                            "label": f"Episode\n{ep.get('reference_time', 'unknown')[:10]}",
-                            "title": ep.get("content", "")[:200],
+                            "label": f"Episode\n{timestamp_str}",
+                            "title": ep.get("content", ep.get("name", ""))[:200],
                             "type": "episode",
                             "properties": dict(ep)
                         }
@@ -185,13 +193,17 @@ class GraphVisualizer:
                 nodes = list(nodes_dict.values())
 
                 # Calculate statistics
+                latest_ep_time = None
+                if episodes:
+                    latest_ep_time = episodes[0].get("valid_at", episodes[0].get("created_at"))
+
                 stats = {
                     "node_count": len(nodes),
                     "episode_count": len(episodes),
                     "entity_count": len(nodes) - len(episodes),
                     "edge_count": len(edges),
                     "time_range": f"last {days_back} days" if days_back else "all time",
-                    "latest_episode": episodes[0].get("reference_time") if episodes else None
+                    "latest_episode": latest_ep_time
                 }
 
                 logger.info(f"Fetched {len(nodes)} nodes, {len(edges)} edges for user {user_id}")
@@ -457,10 +469,11 @@ class GraphVisualizer:
         """
         try:
             with self.driver.session() as session:
+                # Use correct Graphiti schema: :Episodic nodes
                 query = """
-                MATCH (ep:Episode)
+                MATCH (ep:Episodic)
                 WHERE ep.group_id = $user_id
-                OPTIONAL MATCH (ep)-[r]-(entity)
+                OPTIONAL MATCH (ep)-[r]-(entity:Entity)
                 WITH COUNT(DISTINCT ep) as episode_count,
                      COUNT(DISTINCT entity) as entity_count,
                      COUNT(DISTINCT r) as rel_count
