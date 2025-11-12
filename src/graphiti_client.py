@@ -130,10 +130,11 @@ class GraphitiMemoryClient:
             raise RuntimeError("Graphiti not initialized. Call initialize() first.")
 
         try:
+            # Use group_id parameter (Graphiti uses group_id for user isolation, not user_id)
             results = await self._graphiti.search(
                 query=query,
                 num_results=num_results,
-                user_id=user_id,
+                group_id=user_id,  # Map user_id to group_id for Graphiti API
             )
             return results
         except Exception as e:
