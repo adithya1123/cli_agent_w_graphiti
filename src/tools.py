@@ -1,9 +1,13 @@
 """Tools for the agent, including web search"""
 
+import logging
 from typing import Optional
 from tavily import TavilyClient
 
 from src.config import TavilyConfig
+from src.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class WebSearchTool:
@@ -11,8 +15,13 @@ class WebSearchTool:
 
     def __init__(self):
         """Initialize Tavily client"""
-        self.config = TavilyConfig()
-        self.client = TavilyClient(api_key=self.config.api_key)
+        try:
+            self.config = TavilyConfig()
+            self.client = TavilyClient(api_key=self.config.api_key)
+            logger.info("Tavily web search client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Tavily client: {e}", exc_info=True)
+            self.client = None
 
     def search(
         self,
@@ -31,16 +40,28 @@ class WebSearchTool:
         Returns:
             Dictionary with search results
         """
-        try:
-            response = self.client.search(
-                query=query,
-                max_results=max_results,
-                include_answer=include_answer,
-            )
-            return response
-        except Exception as e:
-            print(f"Error during web search: {e}")
-            return {"error": str(e), "results": []}
+        if not self.client:
+            logger.warning("Tavily client not initialized")
+            return {"error": "Search service not available", "results": []}
+
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Executing web search for: {query}")
+                response = self.client.search(
+                    query=query,
+                    max_results=max_results,
+                    include_answer=include_answer,
+                )
+                logger.debug(f"Web search returned {len(response.get('results', []))} results")
+                return response
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Web search failed after {max_retries} attempts: {e}", exc_info=True)
+                    return {"error": f"Search failed: {str(e)}", "results": []}
+                logger.warning(f"Web search attempt {attempt + 1} failed: {e}")
+
+        return {"error": "Search service unavailable", "results": []}
 
     def format_search_results(self, response: dict) -> str:
         """Format search results into a readable string"""
@@ -79,24 +100,37 @@ class ToolRegistry:
 
     def __init__(self):
         """Initialize tool registry with available tools"""
-        self.web_search = WebSearchTool()
-        self.tools = {
-            "web_search": self.web_search.search_and_format,
-        }
+        try:
+            self.web_search = WebSearchTool()
+            self.tools = {
+                "web_search": self.web_search.search_and_format,
+            }
+            logger.info(f"Tool registry initialized with tools: {list(self.tools.keys())}")
+        except Exception as e:
+            logger.error(f"Failed to initialize tool registry: {e}", exc_info=True)
+            self.tools = {}
 
     def get_tool(self, tool_name: str):
         """Get a tool by name"""
+        if tool_name not in self.tools:
+            logger.warning(f"Tool '{tool_name}' not found in registry")
         return self.tools.get(tool_name)
 
     def call_tool(self, tool_name: str, **kwargs) -> str:
         """Call a tool by name with arguments"""
+        logger.debug(f"Calling tool: {tool_name} with kwargs: {list(kwargs.keys())}")
         tool = self.get_tool(tool_name)
         if not tool:
-            return f"Tool '{tool_name}' not found"
+            error_msg = f"Tool '{tool_name}' not found"
+            logger.error(error_msg)
+            return error_msg
 
         try:
-            return tool(**kwargs)
+            result = tool(**kwargs)
+            logger.debug(f"Tool '{tool_name}' executed successfully")
+            return result
         except Exception as e:
+            logger.error(f"Error calling tool '{tool_name}': {e}", exc_info=True)
             return f"Error calling tool '{tool_name}': {str(e)}"
 
     def list_tools(self) -> list[str]:

@@ -1,8 +1,14 @@
 """CLI interface for the Memory Agent with Graphiti and Azure OpenAI"""
 
 import sys
+import logging
 from src.config import validate_all_configs
 from src.agent import SyncMemoryAgent
+from src.logging_config import setup_logging, get_logger
+
+# Initialize logging
+setup_logging(log_level="INFO")
+logger = get_logger(__name__)
 
 
 def print_welcome():
@@ -37,12 +43,12 @@ def main():
     """Main CLI interface for the agent"""
     try:
         # Validate configuration
-        print("Initializing agent...")
+        logger.info("Initializing agent...")
         validate_all_configs()
 
         # Initialize agent
         agent = SyncMemoryAgent(user_id="cli_user")
-        print("Agent initialized successfully!")
+        logger.info("Agent initialized successfully!")
 
         print_welcome()
 
@@ -79,17 +85,19 @@ def main():
                 print("\n\nInterrupted by user. Goodbye!")
                 break
             except Exception as e:
-                print(f"\nError processing message: {e}")
-                print("Please try again.\n")
+                logger.error(f"Error processing message: {e}", exc_info=True)
+                print("Error: Could not process message. Please try again.\n")
 
         # Clean up
         agent.close()
 
     except ValueError as e:
+        logger.error(f"Configuration Error: {e}")
         print(f"Configuration Error: {e}")
         print("Please ensure all required environment variables are set in .env")
         sys.exit(1)
     except Exception as e:
+        logger.error(f"Error initializing agent: {e}", exc_info=True)
         print(f"Error initializing agent: {e}")
         print("\nMake sure Neo4j is running. Start it with:")
         print("  docker-compose up -d")

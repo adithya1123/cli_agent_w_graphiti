@@ -1,13 +1,17 @@
 """Main agent implementation with memory, web search, and Azure OpenAI function calling"""
 
 import json
+import logging
 from datetime import datetime
 from typing import Optional
-from openai import AsyncAzureOpenAI
+from openai import AsyncAzureOpenAI, APIError, APIConnectionError
 
 from src.config import AzureOpenAIConfig, AgentConfig
 from src.graphiti_client import GraphitiMemory
 from src.tools import ToolRegistry
+from src.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class MemoryAgent:
@@ -19,24 +23,43 @@ class MemoryAgent:
         self.agent_config = AgentConfig()
 
         # Initialize Azure OpenAI client
-        self.llm_client = AsyncAzureOpenAI(
-            api_key=self.config.api_key,
-            api_version=self.config.api_version,
-            azure_endpoint=self.config.api_endpoint,
-        )
+        try:
+            self.llm_client = AsyncAzureOpenAI(
+                api_key=self.config.api_key,
+                api_version=self.config.api_version,
+                azure_endpoint=self.config.api_endpoint,
+            )
+            logger.info("Azure OpenAI client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Azure OpenAI client: {e}", exc_info=True)
+            raise RuntimeError(f"Cannot initialize LLM client: {str(e)}")
 
         # Initialize memory with optional external loop
         self.memory = GraphitiMemory(loop=loop)
-        self.memory.initialize()
+        self.memory_available = False
+        try:
+            self.memory.initialize()
+            self.memory_available = True
+            logger.info("Memory system initialized successfully")
+        except Exception as e:
+            logger.warning(f"Memory system initialization failed: {e}. Agent will work without memory.", exc_info=True)
+            self.memory_available = False
 
         # Initialize tools
-        self.tools = ToolRegistry()
+        try:
+            self.tools = ToolRegistry()
+            logger.info(f"Tools initialized: {self.tools.list_tools()}")
+        except Exception as e:
+            logger.error(f"Failed to initialize tools: {e}", exc_info=True)
+            raise RuntimeError(f"Cannot initialize tools: {str(e)}")
 
         # User ID for tracking conversations
         self.user_id = user_id or "default_user"
 
         # Conversation history for context window
         self.conversation_history: list[dict] = []
+
+        logger.info(f"Agent initialized for user: {self.user_id}")
 
     def _get_tool_definitions(self) -> list:
         """Get OpenAI function calling tool definitions"""
@@ -101,33 +124,58 @@ You have access to the web_search function - use it intelligently when needed.""
         # Add current user message
         messages.append({"role": "user", "content": user_message})
 
-        try:
-            # Build request kwargs
-            kwargs = {
-                "model": self.config.chat_deployment_name,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 1000,
-            }
+        max_retries = 3
+        retry_count = 0
 
-            # Add tools if provided
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
+        while retry_count < max_retries:
+            try:
+                # Build request kwargs
+                kwargs = {
+                    "model": self.config.chat_deployment_name,
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": 1000,
+                }
 
-            response = await self.llm_client.chat.completions.create(**kwargs)
+                # Add tools if provided
+                if tools:
+                    kwargs["tools"] = tools
+                    kwargs["tool_choice"] = "auto"
 
-            # Extract response content and tool calls
-            message = response.choices[0].message
-            result = {
-                "content": message.content,
-                "tool_calls": message.tool_calls if hasattr(message, "tool_calls") else None,
-            }
+                response = await self.llm_client.chat.completions.create(**kwargs)
 
-            return result
-        except Exception as e:
-            print(f"Error getting AI response: {e}")
-            return {"content": f"Error generating response: {str(e)}", "tool_calls": None}
+                # Extract response content and tool calls
+                message = response.choices[0].message
+                result = {
+                    "content": message.content,
+                    "tool_calls": message.tool_calls if hasattr(message, "tool_calls") else None,
+                }
+
+                return result
+
+            except APIConnectionError as e:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    logger.error(f"Connection error after {max_retries} retries: {e}", exc_info=True)
+                    return {"content": "Connection error: Could not reach Azure OpenAI service", "tool_calls": None}
+                logger.warning(f"Connection error (attempt {retry_count}/{max_retries}): {e}")
+
+            except APIError as e:
+                logger.error(f"API error from Azure OpenAI: {e}", exc_info=True)
+                error_msg = str(e)
+                if "401" in error_msg or "403" in error_msg:
+                    return {"content": "Authentication error: Please check your API credentials", "tool_calls": None}
+                elif "429" in error_msg:
+                    return {"content": "Rate limited: Too many requests. Please wait a moment.", "tool_calls": None}
+                elif "404" in error_msg:
+                    return {"content": "Deployment not found: Please check your Azure deployment configuration", "tool_calls": None}
+                return {"content": f"API error: {error_msg}", "tool_calls": None}
+
+            except Exception as e:
+                logger.error(f"Unexpected error getting AI response: {e}", exc_info=True)
+                return {"content": f"Error generating response: {str(e)}", "tool_calls": None}
+
+        return {"content": "Error: Could not get response after multiple attempts", "tool_calls": None}
 
     async def _execute_tool_call(self, tool_call) -> str:
         """Execute a single tool call and return the result"""
@@ -136,9 +184,10 @@ You have access to the web_search function - use it intelligently when needed.""
 
         if tool_name == "web_search":
             query = tool_args.get("query", "")
-            print(f"  [Searching web for: {query}]")
+            logger.info(f"Executing web search with query: {query}")
             return self.tools.call_tool("web_search", query=query)
         else:
+            logger.warning(f"Unknown tool requested: {tool_name}")
             return f"Unknown tool: {tool_name}"
 
     async def _handle_tool_calls(self, tool_calls: list, messages: list) -> tuple[str, list]:
@@ -174,7 +223,7 @@ You have access to the web_search function - use it intelligently when needed.""
             final_content = response.choices[0].message.content
             return final_content, messages
         except Exception as e:
-            print(f"Error getting final response after tool calls: {e}")
+            logger.error(f"Error getting final response after tool calls: {e}", exc_info=True)
             return f"Error processing tool results: {str(e)}", messages
 
     async def process_message(self, user_message: str) -> str:
@@ -192,11 +241,18 @@ You have access to the web_search function - use it intelligently when needed.""
             return "Please provide a message."
 
         # Search memory for relevant context
-        context = self.memory.get_context_for_query(
-            query=user_message,
-            group_id=self.user_id,
-            num_results=5,
-        )
+        context = ""
+        if self.memory_available:
+            try:
+                context = self.memory.get_context_for_query(
+                    query=user_message,
+                    group_id=self.user_id,
+                    num_results=5,
+                )
+                logger.debug(f"Retrieved {len(context)} characters of context from memory")
+            except Exception as e:
+                logger.warning(f"Failed to retrieve context from memory: {e}")
+                context = ""  # Continue without context
 
         # Get initial response with tools available
         # This will populate the messages list and handle any tool calls
@@ -246,25 +302,34 @@ You have access to the web_search function - use it intelligently when needed.""
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": final_response})
 
-        # Store in knowledge graph as a new episode with user isolation
-        try:
-            episode_body = f"User: {user_message}\nAgent: {final_response}"
-            self.memory.add_episode(
-                name=f"conversation_{datetime.now().isoformat()}",
-                episode_body=episode_body,
-                source="agent_conversation",
-                source_description=f"Conversation turn between user and {self.agent_config.name}",
-                reference_time=datetime.now(),
-                group_id=self.user_id,  # User isolation via group_id
-            )
-        except Exception as e:
-            print(f"Warning: Could not store episode in knowledge graph: {e}")
+        # Store in knowledge graph as a new episode with user isolation (non-critical)
+        if self.memory_available:
+            try:
+                episode_body = f"User: {user_message}\nAgent: {final_response}"
+                self.memory.add_episode(
+                    name=f"conversation_{datetime.now().isoformat()}",
+                    episode_body=episode_body,
+                    source="agent_conversation",
+                    source_description=f"Conversation turn between user and {self.agent_config.name}",
+                    reference_time=datetime.now(),
+                    group_id=self.user_id,  # User isolation via group_id
+                )
+                logger.debug("Conversation episode stored in knowledge graph")
+            except Exception as e:
+                logger.warning(f"Could not store episode in knowledge graph (memory system may be unavailable): {e}")
+        else:
+            logger.debug("Memory system unavailable; conversation episode not stored")
 
         return final_response
 
     def close(self) -> None:
         """Clean up resources"""
-        self.memory.close()
+        try:
+            if self.memory_available:
+                self.memory.close()
+                logger.info("Memory system closed successfully")
+        except Exception as e:
+            logger.warning(f"Error closing memory system: {e}")
 
 
 class SyncMemoryAgent:
@@ -274,12 +339,17 @@ class SyncMemoryAgent:
         """Initialize the agent with shared event loop"""
         import asyncio
 
-        # Create single event loop that will be shared with MemoryAgent
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
+        try:
+            # Create single event loop that will be shared with MemoryAgent
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
 
-        # Pass loop to async agent to avoid duplicate loop creation
-        self._async_agent = MemoryAgent(user_id, loop=self._loop)
+            # Pass loop to async agent to avoid duplicate loop creation
+            self._async_agent = MemoryAgent(user_id, loop=self._loop)
+            logger.info(f"SyncMemoryAgent initialized for user: {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to initialize SyncMemoryAgent: {e}", exc_info=True)
+            raise
 
     def process_message(self, user_message: str) -> str:
         """Process a user message synchronously"""
@@ -293,8 +363,18 @@ class SyncMemoryAgent:
 
     def close(self) -> None:
         """Clean up resources"""
-        self._async_agent.close()
-        self._loop.close()
+        try:
+            self._async_agent.close()
+            logger.info("Agent resources closed successfully")
+        except Exception as e:
+            logger.warning(f"Error closing agent: {e}")
+        finally:
+            try:
+                if self._loop and not self._loop.is_closed():
+                    self._loop.close()
+                    logger.debug("Event loop closed successfully")
+            except Exception as e:
+                logger.warning(f"Error closing event loop: {e}")
 
     def __enter__(self):
         return self

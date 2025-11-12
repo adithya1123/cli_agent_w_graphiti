@@ -1,5 +1,6 @@
 """Graphiti client wrapper for temporal knowledge graph memory with Azure OpenAI"""
 
+import logging
 from datetime import datetime
 from typing import Optional, Any
 import asyncio
@@ -11,6 +12,9 @@ from graphiti_core.llm_client import LLMConfig, OpenAIClient
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 
 from src.config import AzureOpenAIConfig, Neo4jConfig
+from src.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 # Graphiti EpisodeType enum
@@ -112,7 +116,7 @@ class GraphitiMemoryClient:
 
             await self._graphiti.add_episode(**kwargs)
         except Exception as e:
-            print(f"Error adding episode: {e}")
+            logger.error(f"Error adding episode: {e}", exc_info=True)
             raise
 
     async def search(
@@ -133,7 +137,7 @@ class GraphitiMemoryClient:
             )
             return results
         except Exception as e:
-            print(f"Error searching knowledge graph: {e}")
+            logger.error(f"Error searching knowledge graph: {e}", exc_info=True)
             raise
 
     async def get_context_for_query(
@@ -164,7 +168,7 @@ class GraphitiMemoryClient:
             return "\n".join(context_parts)
 
         except Exception as e:
-            print(f"Error getting context: {e}")
+            logger.error(f"Error getting context: {e}", exc_info=True)
             return "Error retrieving memories."
 
     async def close(self) -> None:
@@ -175,7 +179,7 @@ class GraphitiMemoryClient:
                 if hasattr(self._graphiti, "close"):
                     await self._graphiti.close()
             except Exception as e:
-                print(f"Error closing Graphiti: {e}")
+                logger.warning(f"Error closing Graphiti: {e}")
 
     async def __aenter__(self):
         """Async context manager entry"""
