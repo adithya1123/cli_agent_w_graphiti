@@ -4,6 +4,7 @@ import sys
 import logging
 from src.config import validate_all_configs
 from src.agent import SyncMemoryAgent
+from src.user_session import UserSessionManager
 from src.logging_config import setup_logging, get_logger
 
 # Initialize logging
@@ -11,27 +12,33 @@ setup_logging(log_level="INFO")
 logger = get_logger(__name__)
 
 
-def print_welcome():
-    """Print welcome message"""
-    print("\n" + "=" * 60)
+def print_welcome(user_id: str):
+    """Print welcome message with current user"""
+    print("\n" + "=" * 70)
     print("Welcome to the Memory Agent")
     print("OpenAI + Graphiti Temporal Knowledge Graph")
-    print("=" * 60)
+    print("=" * 70)
+    print(f"\n👤 Current User: {user_id}")
     print("\nAvailable commands:")
     print("  Type your message to chat with the agent")
-    print("  'exit' or 'quit' to end the conversation")
-    print("  'clear' to clear conversation history")
-    print("  'help' for help")
-    print("\n" + "-" * 60 + "\n")
+    print("  'help'          - Show help message")
+    print("  'whoami'        - Show current user")
+    print("  'switch'        - Switch to different user")
+    print("  'clear'         - Clear conversation history")
+    print("  'exit' or 'quit' - End the conversation")
+    print("\n" + "-" * 70 + "\n")
 
 
 def print_help():
     """Print help message"""
     print("\nCommands:")
-    print("  exit, quit     - Exit the agent")
-    print("  clear          - Clear conversation history")
+    print("  whoami         - Show current user")
+    print("  switch         - Switch to different user")
+    print("  clear          - Clear conversation history for current user")
     print("  help           - Show this help message")
+    print("  exit, quit     - Exit the agent")
     print("\nCapabilities:")
+    print("  • Multi-user support with separate memory per user")
     print("  • Learns from conversation using temporal knowledge graph")
     print("  • Retrieves relevant memories from past conversations")
     print("  • Searches the web for current information when needed")
@@ -46,11 +53,15 @@ def main():
         logger.info("Initializing agent...")
         validate_all_configs()
 
-        # Initialize agent
-        agent = SyncMemoryAgent(user_id="cli_user")
-        logger.info("Agent initialized successfully!")
+        # Get user ID with optional persistence
+        user_id = UserSessionManager.prompt_for_user()
+        logger.info(f"User session started: {user_id}")
 
-        print_welcome()
+        # Initialize agent with user_id
+        agent = SyncMemoryAgent(user_id=user_id)
+        logger.info(f"Agent initialized for user: {user_id}")
+
+        print_welcome(user_id)
 
         # Main conversation loop
         while True:
@@ -66,9 +77,22 @@ def main():
                     print("\nGoodbye!")
                     break
 
+                if user_input.lower() == "whoami":
+                    print(f"👤 Current user: {user_id}\n")
+                    continue
+
+                if user_input.lower() == "switch":
+                    print("\nSwitching user...")
+                    agent.close()
+                    user_id = UserSessionManager.prompt_for_user()
+                    agent = SyncMemoryAgent(user_id=user_id)
+                    logger.info(f"User switched to: {user_id}")
+                    print(f"✓ Switched to user: {user_id}\n")
+                    continue
+
                 if user_input.lower() == "clear":
                     agent.clear_history()
-                    print("Conversation history cleared.\n")
+                    print("✓ Conversation history cleared.\n")
                     continue
 
                 if user_input.lower() == "help":

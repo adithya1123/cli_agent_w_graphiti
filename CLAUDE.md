@@ -86,7 +86,15 @@ CONVERSATION_HISTORY_LIMIT=10
 ```bash
 python main.py
 ```
-Interactive CLI with commands:
+**User Session Management:**
+- On startup, you'll be prompted to enter your name
+- If you've used the agent before, your last name will be shown as default (just press Enter to use it)
+- Your conversations are stored per user with separate memory graphs
+- User session data is saved in `~/.agent_memory/last_user`
+
+**Available Commands:**
+- `whoami` - Show current user
+- `switch` - Switch to a different user
 - `help` - Show available commands
 - `clear` - Clear conversation history
 - `exit` or `quit` - Exit the agent
@@ -161,14 +169,31 @@ agent.close()
 - `AgentConfig`: Agent behavior settings
 - `validate_all_configs()`: Central validation function
 
+#### 5. **User Session Management** (`src/user_session.py`)
+- `UserSessionManager`: Manages user sessions with persistent memory
+  - `prompt_for_user()` - Interactive prompt for user ID at startup with last user as default
+  - `get_last_user()` - Retrieves last used user from `~/.agent_memory/last_user`
+  - `save_user(user_id)` - Persists current user to filesystem
+  - `validate_user_id(user_id)` - Validates user ID format (alphanumeric, hyphens, underscores, 1-50 chars)
+  - Session data stored in `~/.agent_memory/` for cross-platform compatibility
+  - Enables multi-user support with automatic last-user detection
+
 ### Data Flow
 ```
+CLI Startup
+    ↓
+UserSessionManager.prompt_for_user() [session detection]
+    ├─ Check ~/.agent_memory/last_user for previous user
+    └─ Display default or prompt for new user
+    ↓
+SyncMemoryAgent(user_id=...) initialized with user context
+    ↓
 User Input
     ↓
 SyncMemoryAgent.process_message() [sync wrapper]
     ↓
 MemoryAgent.process_message() [async core]
-    ├─ GraphitiMemory.get_context_for_query() → retrieve relevant memories
+    ├─ GraphitiMemory.get_context_for_query() → retrieve relevant memories with group_id=user_id
     ├─ _get_ai_response() with tools=[web_search]
     │  ├─ OpenAI AsyncOpenAI client chat completion
     │  └─ LLM decides if tool needed → tool_calls
@@ -272,6 +297,15 @@ MATCH (ep:Episode) RETURN ep ORDER BY ep.reference_time DESC LIMIT 10
 - [x] Integration tests for memory storage and retrieval passing
 - [x] Conversation flow with memory context verified
 - [x] All agent components functional and integrated
+
+#### Phase 7: User Session Management ✅ COMPLETE
+- [x] Create UserSessionManager for persistent user identification
+- [x] Implement interactive user prompt at CLI startup
+- [x] Add last-user detection and default display
+- [x] Implement multi-user session switching
+- [x] Add user management commands (whoami, switch)
+- [x] Update documentation with user session features
+- [x] Verify multi-user memory isolation via group_id
 
 ### Known Issues & Fixes
 
