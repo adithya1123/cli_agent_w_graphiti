@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Optional, Any
 import asyncio
+from enum import Enum
 
 from openai import AsyncAzureOpenAI
 from graphiti_core import Graphiti
@@ -10,6 +11,14 @@ from graphiti_core.llm_client import LLMConfig, OpenAIClient
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 
 from src.config import AzureOpenAIConfig, Neo4jConfig
+
+
+# Graphiti EpisodeType enum
+class EpisodeType(str, Enum):
+    """Episode source types for Graphiti"""
+    text = "text"
+    json = "json"
+    md = "md"
 
 
 class GraphitiMemoryClient:
@@ -66,7 +75,8 @@ class GraphitiMemoryClient:
         self,
         name: str,
         episode_body: str,
-        source: str = "agent",
+        source: str = "text",
+        source_description: Optional[str] = None,
         reference_time: Optional[datetime] = None,
         group_id: Optional[str] = None,
     ) -> None:
@@ -77,12 +87,24 @@ class GraphitiMemoryClient:
         if reference_time is None:
             reference_time = datetime.now()
 
+        if source_description is None:
+            source_description = f"Episode from {source}"
+
         try:
+            # Convert source string to EpisodeType enum
+            # Valid values: "text", "json", "md" (markdown)
+            source_enum = EpisodeType.text  # Default to text for conversation episodes
+            if source.lower() == "json":
+                source_enum = EpisodeType.json
+            elif source.lower() == "md" or source.lower() == "markdown":
+                source_enum = EpisodeType.md
+
             # Build kwargs for add_episode - include group_id for user isolation
             kwargs = {
                 "name": name,
                 "episode_body": episode_body,
-                "source": source,
+                "source": source_enum,  # Use enum instead of string
+                "source_description": source_description,
                 "reference_time": reference_time,
             }
             if group_id:
@@ -189,6 +211,7 @@ class GraphitiMemory:
         name: str,
         episode_body: str,
         source: str = "agent",
+        source_description: Optional[str] = None,
         reference_time: Optional[datetime] = None,
         group_id: Optional[str] = None,
     ) -> None:
@@ -196,7 +219,9 @@ class GraphitiMemory:
         if not self._loop:
             raise RuntimeError("Not initialized. Call initialize() first.")
         self._loop.run_until_complete(
-            self._client.add_episode(name, episode_body, source, reference_time, group_id)
+            self._client.add_episode(
+                name, episode_body, source, source_description, reference_time, group_id
+            )
         )
 
     def search(

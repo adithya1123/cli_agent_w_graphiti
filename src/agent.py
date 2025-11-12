@@ -253,6 +253,7 @@ You have access to the web_search function - use it intelligently when needed.""
                 name=f"conversation_{datetime.now().isoformat()}",
                 episode_body=episode_body,
                 source="agent_conversation",
+                source_description=f"Conversation turn between user and {self.agent_config.name}",
                 reference_time=datetime.now(),
                 group_id=self.user_id,  # User isolation via group_id
             )
