@@ -222,11 +222,29 @@ class GraphitiMemory:
         """Add an episode to the knowledge graph with user isolation via group_id"""
         if not self._loop:
             raise RuntimeError("Not initialized. Call initialize() first.")
-        self._loop.run_until_complete(
-            self._client.add_episode(
-                name, episode_body, source, source_description, reference_time, group_id
+
+        try:
+            # Try to run the coroutine normally
+            self._loop.run_until_complete(
+                self._client.add_episode(
+                    name, episode_body, source, source_description, reference_time, group_id
+                )
             )
-        )
+        except RuntimeError as e:
+            # If loop is already running (called from async context), use ensure_future
+            if "This event loop is already running" in str(e):
+                import asyncio
+                # Schedule the task but don't wait for it (fire and forget)
+                # This prevents blocking the running event loop
+                asyncio.ensure_future(
+                    self._client.add_episode(
+                        name, episode_body, source, source_description, reference_time, group_id
+                    ),
+                    loop=self._loop
+                )
+                logger.debug("Episode storage scheduled (non-blocking in running event loop)")
+            else:
+                raise
 
     def search(
         self,
@@ -238,10 +256,18 @@ class GraphitiMemory:
         """Search the knowledge graph"""
         if not self._loop:
             raise RuntimeError("Not initialized. Call initialize() first.")
-        # Use group_id for user isolation if provided
-        return self._loop.run_until_complete(
-            self._client.search(query, num_results, group_id or user_id)
-        )
+
+        try:
+            # Use group_id for user isolation if provided
+            return self._loop.run_until_complete(
+                self._client.search(query, num_results, group_id or user_id)
+            )
+        except RuntimeError as e:
+            if "This event loop is already running" in str(e):
+                # Can't block in running event loop - return empty result
+                logger.warning("Memory search failed: cannot run in already-running event loop")
+                return {"results": []}
+            raise
 
     def get_context_for_query(
         self,
@@ -253,10 +279,18 @@ class GraphitiMemory:
         """Get context string from the knowledge graph with user isolation"""
         if not self._loop:
             raise RuntimeError("Not initialized. Call initialize() first.")
-        # Use group_id for user isolation if provided
-        return self._loop.run_until_complete(
-            self._client.get_context_for_query(query, group_id or user_id, num_results)
-        )
+
+        try:
+            # Use group_id for user isolation if provided
+            return self._loop.run_until_complete(
+                self._client.get_context_for_query(query, group_id or user_id, num_results)
+            )
+        except RuntimeError as e:
+            if "This event loop is already running" in str(e):
+                # Can't block in running event loop - return empty context
+                logger.warning("Memory context retrieval failed: cannot run in already-running event loop")
+                return ""
+            raise
 
     def close(self) -> None:
         """Close the client and clean up"""
