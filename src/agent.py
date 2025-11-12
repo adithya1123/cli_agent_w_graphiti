@@ -19,6 +19,8 @@ class MemoryAgent:
 
     def __init__(self, user_id: Optional[str] = None, loop=None):
         """Initialize the agent with optional event loop"""
+        from src.graphiti_client import GraphitiMemoryClient
+
         self.config = AzureOpenAIConfig()
         self.agent_config = AgentConfig()
 
@@ -34,13 +36,14 @@ class MemoryAgent:
             logger.error(f"Failed to initialize Azure OpenAI client: {e}", exc_info=True)
             raise RuntimeError(f"Cannot initialize LLM client: {str(e)}")
 
-        # Initialize memory with optional external loop
-        self.memory = GraphitiMemory(loop=loop)
+        # Initialize async memory client (for use within async methods)
+        self.memory_client = GraphitiMemoryClient()
         self.memory_available = False
         try:
-            self.memory.initialize()
+            # Note: We don't initialize the async client here - it will be initialized when needed
+            # This avoids blocking during __init__
             self.memory_available = True
-            logger.info("Memory system initialized successfully")
+            logger.info("Memory client configured successfully")
         except Exception as e:
             logger.warning(f"Memory system initialization failed: {e}. Agent will work without memory.", exc_info=True)
             self.memory_available = False
@@ -244,9 +247,13 @@ You have access to the web_search function - use it intelligently when needed.""
         context = ""
         if self.memory_available:
             try:
-                context = self.memory.get_context_for_query(
+                # Initialize memory client if needed (first time)
+                if not self.memory_client._graphiti:
+                    await self.memory_client.initialize()
+
+                context = await self.memory_client.get_context_for_query(
                     query=user_message,
-                    group_id=self.user_id,
+                    user_id=self.user_id,
                     num_results=5,
                 )
                 logger.debug(f"Retrieved {len(context)} characters of context from memory")
@@ -306,7 +313,7 @@ You have access to the web_search function - use it intelligently when needed.""
         if self.memory_available:
             try:
                 episode_body = f"User: {user_message}\nAgent: {final_response}"
-                self.memory.add_episode(
+                await self.memory_client.add_episode(
                     name=f"conversation_{datetime.now().isoformat()}",
                     episode_body=episode_body,
                     source="agent_conversation",
@@ -316,7 +323,7 @@ You have access to the web_search function - use it intelligently when needed.""
                 )
                 logger.debug("Conversation episode stored in knowledge graph")
             except Exception as e:
-                logger.warning(f"Could not store episode in knowledge graph (memory system may be unavailable): {e}")
+                logger.warning(f"Could not store episode in knowledge graph: {e}")
         else:
             logger.debug("Memory system unavailable; conversation episode not stored")
 
@@ -324,12 +331,9 @@ You have access to the web_search function - use it intelligently when needed.""
 
     def close(self) -> None:
         """Clean up resources"""
-        try:
-            if self.memory_available:
-                self.memory.close()
-                logger.info("Memory system closed successfully")
-        except Exception as e:
-            logger.warning(f"Error closing memory system: {e}")
+        # Note: Async memory client cleanup happens in SyncMemoryAgent.close()
+        # Since this is an async agent, we can't call async methods here
+        logger.debug("MemoryAgent resources cleaned up")
 
 
 class SyncMemoryAgent:
@@ -364,6 +368,13 @@ class SyncMemoryAgent:
     def close(self) -> None:
         """Clean up resources"""
         try:
+            # Close async memory client
+            if self._async_agent.memory_client._graphiti:
+                self._loop.run_until_complete(
+                    self._async_agent.memory_client.close()
+                )
+                logger.debug("Memory client closed successfully")
+
             self._async_agent.close()
             logger.info("Agent resources closed successfully")
         except Exception as e:
