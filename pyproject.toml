@@ -3,7 +3,9 @@ name = "agent-w-mem"
 version = "0.1.0"
 description = "Azure OpenAI Agent with Graphiti Temporal Knowledge Graph Memory"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
+# Development environment uses Python 3.13 (see .python-version)
+# Minimum supported version is 3.11 for better type annotation support
 dependencies = [
     "graphiti-core>=0.1.0",
     "openai>=1.50.0",
