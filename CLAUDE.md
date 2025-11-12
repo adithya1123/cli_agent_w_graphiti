@@ -216,39 +216,42 @@ MATCH (ep:Episode) RETURN ep ORDER BY ep.reference_time DESC LIMIT 10
 
 ## Development Progress & Roadmap
 
-### Current Phase: Implementation of Core Features
-**Timeline**: Active Development
+### Current Phase: Graphiti Azure OpenAI Integration
+**Timeline**: Active Development - Awaiting Azure v1 API Opt-in
 
-#### Phase 1: Critical Setup & Dependencies (Est. 30 min)
-- [ ] Install missing dependencies: `graphiti-core>=0.1.0`, `tavily-python>=0.3.0`
-- [ ] Start Neo4j database with `docker-compose up -d`
-- [ ] Verify end-to-end connectivity
+#### Phase 1: Critical Setup & Dependencies ✅ COMPLETE
+- [x] Install missing dependencies: `graphiti-core>=0.1.0`, `tavily-python>=0.3.0`
+- [x] Start Neo4j database with `docker-compose up -d`
+- [x] Verify end-to-end connectivity
 
-#### Phase 2: Critical Bug Fixes (Est. 1 hour)
-- [ ] Fix user isolation: Use `group_id` parameter (not `user_id`) in `add_episode()` calls
-- [ ] Refactor event loop architecture: Single shared loop between components
-- [ ] Add `clear_history()` method to `SyncMemoryAgent` for proper encapsulation
+#### Phase 2: Critical Bug Fixes ✅ COMPLETE
+- [x] Fix user isolation: Use `group_id` parameter (not `user_id`) in `add_episode()` calls
+- [x] Refactor event loop architecture: Single shared loop between components
+- [x] Add `clear_history()` method to `SyncMemoryAgent` for proper encapsulation
 
-#### Phase 3: OpenAI Function Calling Implementation (Est. 2-3 hours)
+#### Phase 3: Graphiti Azure OpenAI Integration ⏳ IN PROGRESS
+- [x] Identify Azure OpenAI v1 API requirement for Structured Outputs (Responses API)
+- [x] Implement Graphiti LLMConfig with Azure deployment names
+- [x] Add OpenAIRerankerClient (cross_encoder) for Azure OpenAI
+- [x] Test initialization and episode creation
+- ⏳ **BLOCKED**: Azure deployment requires v1 API opt-in (404 error on responses.parse())
+- [ ] **NEXT**: Enable v1 API opt-in on Azure OpenAI deployment (user responsibility)
+- [ ] Verify episode creation works with v1 API enabled
+- [ ] Test hybrid memory search with stored episodes
+
+#### Phase 4: Function Calling Implementation ⏳ PLANNED
 - [ ] Define tool schemas for web_search using Azure's `tools` parameter format
 - [ ] Implement tool execution loop in `_get_ai_response()` and `process_message()`
 - [ ] Remove keyword-based heuristic (`_should_use_web_search()`)
 - [ ] Support multi-turn tool usage (tool → result → final response)
-- [ ] Verify Graphiti LLM client initialization
 
-#### Phase 4: Error Handling & Robustness (Est. 1-2 hours)
+#### Phase 5: Error Handling & Robustness ⏳ PLANNED
 - [ ] Add graceful error recovery for memory search, web search, and episode storage
-- [ ] Replace `print()` statements with Python `logging` module
+- [ ] Replace `print()` statements with Python `logging` module (partially done)
 - [ ] Add input validation for user messages and tool responses
 - [ ] Implement retry logic for transient failures
 
-#### Phase 5: Documentation & Polish (Est. 1 hour)
-- [ ] Create comprehensive README.md with setup, usage, and examples
-- [ ] Create .env.example template file
-- [ ] Update CLAUDE.md with implementation details
-- [ ] Align Python version requirements
-
-#### Phase 6: Testing & Validation (Est. 1-2 hours)
+#### Phase 6: Testing & Validation ⏳ PLANNED
 - [ ] Create unit tests for ToolRegistry and configuration
 - [ ] Create integration tests for memory storage and retrieval
 - [ ] Manual testing: Basic conversation, web search, multi-turn, error scenarios
@@ -256,23 +259,49 @@ MATCH (ep:Episode) RETURN ep ORDER BY ep.reference_time DESC LIMIT 10
 
 ### Known Issues & Fixes
 
-**Issue 1: User Scoping Bug**
+**Issue 1: User Scoping Bug** ✅ FIXED
 - **Location**: `src/agent.py:155-160`
 - **Problem**: `add_episode()` doesn't pass `user_id`, causing memory contamination between users
 - **Fix**: Use Graphiti's `group_id` parameter instead
-- **Impact**: Critical for multi-user scenarios
+- **Status**: ✅ COMPLETE - All `add_episode()` calls now use `group_id` for user isolation
 
-**Issue 2: Function Calling Not Implemented**
-- **Location**: `src/agent.py:_get_ai_response()`
-- **Problem**: Web search triggered by heuristic, not by LLM decision
-- **Fix**: Implement Azure OpenAI `tools` parameter with execution loop
-- **Impact**: Core feature - enables intelligent tool usage
-
-**Issue 3: Event Loop Management**
+**Issue 2: Event Loop Management** ✅ FIXED
 - **Location**: `src/graphiti_client.py` & `src/agent.py`
 - **Problem**: Multiple event loops created, potential conflicts
 - **Fix**: Refactor to use single shared loop or `asyncio.run()` pattern
-- **Impact**: Architecture stability
+- **Status**: ✅ COMPLETE - Single event loop architecture implemented
+
+**Issue 3: Graphiti Azure OpenAI v1 API Requirement** ⏳ BLOCKED
+- **Location**: `src/graphiti_client.py:38-89`
+- **Problem**: Graphiti uses `client.beta.chat.completions.parse()` (Responses API) which requires Azure OpenAI v1 API opt-in
+- **Error**: 404 Resource not found on `responses.parse()` endpoint
+- **Root Cause**: Azure deployment doesn't have v1 API opt-in enabled
+- **Solution**: User must enable v1 API opt-in on Azure deployment (see instructions below)
+- **Implemented Fix** (waiting for v1 opt-in):
+  - ✅ Added `LLMConfig` with Azure deployment names to `OpenAIClient`
+  - ✅ Added `OpenAIRerankerClient` (cross_encoder) for Azure OpenAI
+  - Code is ready; just needs v1 API enabled on Azure side
+
+**Issue 4: Function Calling Not Implemented** ⏳ PLANNED
+- **Location**: `src/agent.py:_get_ai_response()`
+- **Problem**: Web search triggered by heuristic, not by LLM decision
+- **Fix**: Implement Azure OpenAI `tools` parameter with execution loop
+- **Status**: Planned for Phase 4 - will use chat completions with tool support
+
+### How to Enable Azure OpenAI v1 API Opt-In
+
+**Required for Graphiti Responses API (Structured Outputs):**
+The official Graphiti docs require: `client.beta.chat.completions.parse()`
+
+**Steps to enable on your Azure deployment:**
+1. Go to Azure Portal or Azure AI Foundry
+2. Navigate to your Azure OpenAI resource
+3. Find Settings → API Version Management (or Preview Features)
+4. Enable **v1 API opt-in** for your deployment (gpt-5-mini)
+5. Wait a few minutes for propagation
+6. Restart the agent application
+
+**Reference:** https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle?tabs=key#api-evolution
 
 ## Dependencies and Versions
 

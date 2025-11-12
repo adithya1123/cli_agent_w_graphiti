@@ -39,6 +39,16 @@ class Neo4jConfig:
             raise ValueError("NEO4J_URI not set in environment")
 
 
+class OpenAIConfig:
+    """OpenAI Configuration (for Graphiti LLM - supports Responses API)"""
+    api_key: str = os.getenv("OPENAI_API_KEY")
+
+    @classmethod
+    def validate(cls) -> bool:
+        """Validate OpenAI configuration (optional)"""
+        return bool(cls.api_key)
+
+
 class TavilyConfig:
     """Tavily Search Configuration"""
     api_key: str = os.getenv("TAVILY_API_KEY")

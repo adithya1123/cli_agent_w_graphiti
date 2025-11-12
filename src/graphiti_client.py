@@ -10,6 +10,7 @@ from openai import AsyncAzureOpenAI
 from graphiti_core import Graphiti
 from graphiti_core.llm_client import LLMConfig, OpenAIClient
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
+from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 
 from src.config import AzureOpenAIConfig, Neo4jConfig
 from src.logging_config import get_logger
@@ -51,8 +52,16 @@ class GraphitiMemoryClient:
             azure_endpoint=self.config.api_endpoint,
         )
 
-        # Initialize LLM client for Graphiti
-        self._llm_client = OpenAIClient(client=llm_azure_client)
+        # Initialize LLM client for Graphiti with Azure deployment names
+        # LLMConfig is required to properly configure Azure OpenAI for Structured Outputs
+        azure_llm_config = LLMConfig(
+            model=self.config.chat_deployment_name,
+            small_model=self.config.chat_deployment_name,
+        )
+        self._llm_client = OpenAIClient(
+            config=azure_llm_config,
+            client=llm_azure_client
+        )
 
         # Initialize embedder for Graphiti
         embedder = OpenAIEmbedder(
@@ -63,16 +72,20 @@ class GraphitiMemoryClient:
             ),
         )
 
-        # Initialize Graphiti with cross_encoder=None to avoid needing OPENAI_API_KEY
-        # Note: This disables the OpenAI reranker. For production, provide OPENAI_API_KEY
-        # in environment or pass a custom CrossEncoderClient configured for Azure OpenAI
+        # Initialize cross_encoder (reranker) for Azure OpenAI
+        cross_encoder = OpenAIRerankerClient(
+            config=azure_llm_config,
+            client=llm_azure_client
+        )
+
+        # Initialize Graphiti with Azure OpenAI for all components
         self._graphiti = Graphiti(
             uri=self.neo4j_config.uri,
             user=self.neo4j_config.user,
             password=self.neo4j_config.password,
             llm_client=self._llm_client,
             embedder=embedder,
-            cross_encoder=None,  # Disable reranker to avoid requiring separate OPENAI_API_KEY
+            cross_encoder=cross_encoder,
         )
 
     async def add_episode(
