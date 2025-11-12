@@ -1,5 +1,6 @@
-"""Main agent implementation with memory, web search, and Azure OpenAI"""
+"""Main agent implementation with memory, web search, and Azure OpenAI function calling"""
 
+import json
 from datetime import datetime
 from typing import Optional
 from openai import AsyncAzureOpenAI
@@ -37,28 +38,51 @@ class MemoryAgent:
         # Conversation history for context window
         self.conversation_history: list[dict] = []
 
+    def _get_tool_definitions(self) -> list:
+        """Get OpenAI function calling tool definitions"""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web for current information when you need up-to-date facts, news, prices, or information beyond your training data",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query to find relevant information on the web",
+                            }
+                        },
+                        "required": ["query"],
+                    },
+                },
+            }
+        ]
+
     def _create_system_prompt(self) -> str:
         """Create the system prompt for the agent"""
-        return f"""You are {self.agent_config.name}, a helpful AI assistant with access to a temporal knowledge graph memory system and the ability to search the web for current information.
+        return f"""You are {self.agent_config.name}, a helpful AI assistant with access to:
+1. A temporal knowledge graph that stores facts learned from past conversations
+2. Web search capability for current information
 
-Your capabilities:
-1. You have access to a temporal knowledge graph that stores facts learned from past conversations
-2. You can search the web for current information using the web_search tool
-3. You maintain a coherent conversation with the user
-4. You learn and remember facts about the user and the world from your conversations
+Your approach:
+- Use memories from past conversations when relevant
+- Call web_search when you need current information, recent news, prices, or facts beyond your training
+- Be clear about whether you're using past memories vs. current web information
+- Learn and remember new information from conversations
 
-When responding:
-- Use relevant memories from past conversations when available
-- Search the web when you need current information or when your knowledge is insufficient
-- Be clear about when you're using past memories vs. current information from the web
-- Be conversational and helpful
-- Update your knowledge with new information from each conversation
+You have access to the web_search function - use it intelligently when needed."""
 
-Available tools:
-- web_search(query): Search the web for information"""
+    async def _get_ai_response(
+        self, user_message: str, context: str = "", tools: Optional[list] = None
+    ) -> dict:
+        """
+        Get response from Azure OpenAI with function calling support
 
-    async def _get_ai_response(self, user_message: str, context: str = "") -> str:
-        """Get response from Azure OpenAI with context from memory"""
+        Returns:
+            Dict with 'content' (str) and 'tool_calls' (list or None)
+        """
         # Build messages for the API
         system_message = self._create_system_prompt()
 
@@ -78,6 +102,68 @@ Available tools:
         messages.append({"role": "user", "content": user_message})
 
         try:
+            # Build request kwargs
+            kwargs = {
+                "model": self.config.chat_deployment_name,
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 1000,
+            }
+
+            # Add tools if provided
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+
+            response = await self.llm_client.chat.completions.create(**kwargs)
+
+            # Extract response content and tool calls
+            message = response.choices[0].message
+            result = {
+                "content": message.content,
+                "tool_calls": message.tool_calls if hasattr(message, "tool_calls") else None,
+            }
+
+            return result
+        except Exception as e:
+            print(f"Error getting AI response: {e}")
+            return {"content": f"Error generating response: {str(e)}", "tool_calls": None}
+
+    async def _execute_tool_call(self, tool_call) -> str:
+        """Execute a single tool call and return the result"""
+        tool_name = tool_call.function.name
+        tool_args = json.loads(tool_call.function.arguments)
+
+        if tool_name == "web_search":
+            query = tool_args.get("query", "")
+            print(f"  [Searching web for: {query}]")
+            return self.tools.call_tool("web_search", query=query)
+        else:
+            return f"Unknown tool: {tool_name}"
+
+    async def _handle_tool_calls(self, tool_calls: list, messages: list) -> tuple[str, list]:
+        """
+        Handle tool calls from the LLM
+
+        Returns:
+            (final_response, updated_messages)
+        """
+        # Execute all tool calls
+        for tool_call in tool_calls:
+            tool_result = await self._execute_tool_call(tool_call)
+
+            # Add tool result to messages
+            messages.append(
+                {
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": tool_call.function.name,
+                    "content": tool_result,
+                }
+            )
+
+        # Get final response from LLM with tool results
+        try:
             response = await self.llm_client.chat.completions.create(
                 model=self.config.chat_deployment_name,
                 messages=messages,
@@ -85,39 +171,15 @@ Available tools:
                 max_tokens=1000,
             )
 
-            return response.choices[0].message.content
+            final_content = response.choices[0].message.content
+            return final_content, messages
         except Exception as e:
-            print(f"Error getting AI response: {e}")
-            return f"Error generating response: {str(e)}"
-
-    async def _handle_web_search(self, query: str) -> str:
-        """Handle web search request"""
-        print(f"  [Searching web for: {query}]")
-        result = self.tools.call_tool("web_search", query=query)
-        return result
-
-    def _should_use_web_search(self, user_message: str) -> bool:
-        """Determine if web search should be used"""
-        # Simple heuristic: use web search for questions about current events,
-        # recent information, or when explicitly asked
-        keywords = [
-            "today",
-            "current",
-            "latest",
-            "recent",
-            "now",
-            "2024",
-            "2025",
-            "how much",
-            "what is the price",
-            "news",
-            "search",
-        ]
-        return any(keyword in user_message.lower() for keyword in keywords)
+            print(f"Error getting final response after tool calls: {e}")
+            return f"Error processing tool results: {str(e)}", messages
 
     async def process_message(self, user_message: str) -> str:
         """
-        Process a user message and generate a response
+        Process a user message with function calling support
 
         Args:
             user_message: The user's input message
@@ -125,33 +187,68 @@ Available tools:
         Returns:
             The agent's response
         """
+        # Validate input
+        if not user_message or not user_message.strip():
+            return "Please provide a message."
+
         # Search memory for relevant context
         context = self.memory.get_context_for_query(
             query=user_message,
-            user_id=self.user_id,
+            group_id=self.user_id,
             num_results=5,
         )
 
-        # Optionally search the web
-        web_context = ""
-        if self._should_use_web_search(user_message):
-            web_context = await self._handle_web_search(user_message)
+        # Get initial response with tools available
+        # This will populate the messages list and handle any tool calls
+        ai_result = await self._get_ai_response(user_message, context, tools=self._get_tool_definitions())
 
-        # Combine contexts
-        full_context = context
-        if web_context:
-            full_context += f"\n\nWeb search results:\n{web_context}"
+        # Process tool calls if the LLM decided to use them
+        final_response = ai_result["content"]
+        if ai_result["tool_calls"]:
+            # Build messages for tool handling
+            system_message = self._create_system_prompt()
+            if context:
+                system_message += f"\n\nContext from your memories:\n{context}"
 
-        # Get AI response
-        response = await self._get_ai_response(user_message, full_context)
+            messages = [
+                {"role": "system", "content": system_message},
+            ]
+
+            # Add conversation history
+            history_limit = self.agent_config.conversation_history_limit
+            for msg in self.conversation_history[-history_limit:]:
+                messages.append(msg)
+
+            # Add current user message
+            messages.append({"role": "user", "content": user_message})
+
+            # Add the assistant response with tool calls
+            messages.append({
+                "role": "assistant",
+                "content": ai_result["content"],
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        }
+                    }
+                    for tc in ai_result["tool_calls"]
+                ]
+            })
+
+            # Handle tool calls
+            final_response, _ = await self._handle_tool_calls(ai_result["tool_calls"], messages)
 
         # Add to conversation history
         self.conversation_history.append({"role": "user", "content": user_message})
-        self.conversation_history.append({"role": "assistant", "content": response})
+        self.conversation_history.append({"role": "assistant", "content": final_response})
 
         # Store in knowledge graph as a new episode with user isolation
         try:
-            episode_body = f"User: {user_message}\nAgent: {response}"
+            episode_body = f"User: {user_message}\nAgent: {final_response}"
             self.memory.add_episode(
                 name=f"conversation_{datetime.now().isoformat()}",
                 episode_body=episode_body,
@@ -162,7 +259,7 @@ Available tools:
         except Exception as e:
             print(f"Warning: Could not store episode in knowledge graph: {e}")
 
-        return response
+        return final_response
 
     def close(self) -> None:
         """Clean up resources"""
