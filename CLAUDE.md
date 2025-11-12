@@ -95,9 +95,16 @@ python main.py
 **Available Commands:**
 - `whoami` - Show current user
 - `switch` - Switch to a different user
+- `visualize [N]` - Visualize knowledge graph
+  - `visualize` - All time (default)
+  - `visualize 7` - Last 7 days
+  - `visualize 30` - Last 30 days
 - `help` - Show available commands
 - `clear` - Clear conversation history
 - `exit` or `quit` - Exit the agent
+
+**Graph Visualization:**
+The visualizer generates interactive HTML with the knowledge graph for the current user. Click and drag to explore, scroll to zoom. Visualizations are automatically opened in your default browser and saved to `/tmp/agent_visualizations/` for later viewing.
 
 ### Code Examples
 ```python
@@ -109,6 +116,48 @@ response = agent.process_message("What did I tell you about Python last week?")
 print(response)
 agent.close()
 ```
+
+### Graph Visualization
+
+**CLI Usage:**
+```bash
+python main.py
+# In the chat:
+You: visualize          # Show all-time graph
+You: visualize 7        # Show last 7 days
+You: visualize 30       # Show last 30 days
+```
+
+**Programmatic Usage:**
+```python
+from src.visualizer import GraphVisualizer
+
+# Create visualizer
+viz = GraphVisualizer()
+
+# Generate visualization
+html_file = viz.visualize_user_graph(
+    user_id="alice",
+    days_back=7,              # Optional: 7, 30, or None (all time)
+    output_file="/tmp/graph.html",  # Optional: custom output path
+    open_browser=True         # Auto-open in browser
+)
+
+# Get statistics
+stats = viz.get_user_statistics("alice")
+print(f"Episodes: {stats['episode_count']}")
+print(f"Entities: {stats['entity_count']}")
+
+viz.close()
+```
+
+**Jupyter Notebook:**
+Open `notebooks/graph_explorer.ipynb` for interactive graph exploration with:
+- Single and multi-user visualizations
+- User comparison and statistics
+- Custom Cypher queries
+- Conversation timeline analysis
+- See notebook comments for detailed examples
 
 ## Architecture
 
@@ -177,6 +226,18 @@ agent.close()
   - `validate_user_id(user_id)` - Validates user ID format (alphanumeric, hyphens, underscores, 1-50 chars)
   - Session data stored in `~/.agent_memory/` for cross-platform compatibility
   - Enables multi-user support with automatic last-user detection
+
+#### 6. **Graph Visualization** (`src/visualizer.py`)
+- `GraphVisualizer`: Interactive visualization of per-user knowledge graphs
+  - Direct Neo4j connection for graph data retrieval
+  - Time-based filtering (7 days, 30 days, all time)
+  - Interactive HTML visualization using vis.js (CDN-based)
+  - User isolation via `group_id` parameter in Cypher queries
+  - `visualize_user_graph()` - Generate and display interactive graph
+  - `get_user_statistics()` - Fetch episode/entity/relationship counts
+  - Auto-opens in browser, saves to `/tmp/agent_visualizations/`
+  - Color-coded node types (Episodes, Entities, etc.)
+  - Supports Jupyter notebook usage for advanced analysis
 
 ### Data Flow
 ```
@@ -306,6 +367,18 @@ MATCH (ep:Episode) RETURN ep ORDER BY ep.reference_time DESC LIMIT 10
 - [x] Add user management commands (whoami, switch)
 - [x] Update documentation with user session features
 - [x] Verify multi-user memory isolation via group_id
+
+#### Phase 8: Graph Visualization ✅ COMPLETE
+- [x] Create GraphVisualizer module for Neo4j graph visualization
+- [x] Implement Neo4j data fetching with user isolation (group_id filtering)
+- [x] Create interactive HTML visualization using vis.js
+- [x] Add time-based filtering (7 days, 30 days, all time)
+- [x] Integrate visualize command into CLI with optional time parameter
+- [x] Auto-open visualizations in browser
+- [x] Create Jupyter notebook template (graph_explorer.ipynb) for advanced analysis
+- [x] Add user statistics retrieval and analysis methods
+- [x] Update CLAUDE.md with visualization documentation and examples
+- [x] Support both CLI and programmatic usage
 
 ### Known Issues & Fixes
 

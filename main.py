@@ -5,6 +5,7 @@ import logging
 from src.config import validate_all_configs
 from src.agent import SyncMemoryAgent
 from src.user_session import UserSessionManager
+from src.visualizer import GraphVisualizer
 from src.logging_config import setup_logging, get_logger
 
 # Initialize logging
@@ -24,6 +25,7 @@ def print_welcome(user_id: str):
     print("  'help'          - Show help message")
     print("  'whoami'        - Show current user")
     print("  'switch'        - Switch to different user")
+    print("  'visualize'     - Visualize knowledge graph (options: 7, 30, all)")
     print("  'clear'         - Clear conversation history")
     print("  'exit' or 'quit' - End the conversation")
     print("\n" + "-" * 70 + "\n")
@@ -32,15 +34,19 @@ def print_welcome(user_id: str):
 def print_help():
     """Print help message"""
     print("\nCommands:")
-    print("  whoami         - Show current user")
-    print("  switch         - Switch to different user")
-    print("  clear          - Clear conversation history for current user")
-    print("  help           - Show this help message")
-    print("  exit, quit     - Exit the agent")
+    print("  whoami              - Show current user")
+    print("  switch              - Switch to different user")
+    print("  visualize [N]       - Visualize knowledge graph")
+    print("                        '7' = last 7 days, '30' = last 30 days")
+    print("                        'all' or empty = all time (default)")
+    print("  clear               - Clear conversation history for current user")
+    print("  help                - Show this help message")
+    print("  exit, quit          - Exit the agent")
     print("\nCapabilities:")
     print("  • Multi-user support with separate memory per user")
     print("  • Learns from conversation using temporal knowledge graph")
     print("  • Retrieves relevant memories from past conversations")
+    print("  • Visualizes knowledge graph with interactive graphs")
     print("  • Searches the web for current information when needed")
     print("  • Maintains context across multiple turns")
     print()
@@ -88,6 +94,31 @@ def main():
                     agent = SyncMemoryAgent(user_id=user_id)
                     logger.info(f"User switched to: {user_id}")
                     print(f"✓ Switched to user: {user_id}\n")
+                    continue
+
+                # Handle visualize command
+                if user_input.lower().startswith("visualize"):
+                    try:
+                        # Parse optional time parameter
+                        parts = user_input.split()
+                        days_back = None
+
+                        if len(parts) > 1:
+                            time_arg = parts[1].lower()
+                            if time_arg in ["7", "30"]:
+                                days_back = int(time_arg)
+                            elif time_arg != "all":
+                                print("⚠️  Invalid time range. Use: visualize 7, visualize 30, or visualize\n")
+                                continue
+
+                        # Create visualizer and show graph
+                        print("\nGenerating graph visualization...")
+                        visualizer = GraphVisualizer()
+                        visualizer.visualize_user_graph(user_id, days_back=days_back)
+                        visualizer.close()
+                    except Exception as e:
+                        logger.error(f"Error visualizing graph: {e}", exc_info=True)
+                        print(f"Error: Could not visualize graph: {e}\n")
                     continue
 
                 if user_input.lower() == "clear":
