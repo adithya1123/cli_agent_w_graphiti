@@ -1,4 +1,4 @@
-"""Graphiti client wrapper for temporal knowledge graph memory with Azure OpenAI"""
+"""Graphiti client wrapper for temporal knowledge graph memory with OpenAI"""
 
 import logging
 from datetime import datetime
@@ -6,13 +6,13 @@ from typing import Optional, Any
 import asyncio
 from enum import Enum
 
-from openai import AsyncAzureOpenAI
+from openai import AsyncOpenAI
 from graphiti_core import Graphiti
 from graphiti_core.llm_client import LLMConfig, OpenAIClient
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 
-from src.config import AzureOpenAIConfig, Neo4jConfig
+from src.config import OpenAIConfig, Neo4jConfig
 from src.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -30,55 +30,58 @@ class GraphitiMemoryClient:
     """Wrapper around Graphiti for managing temporal knowledge graph memory"""
 
     def __init__(self):
-        """Initialize Graphiti client with Azure OpenAI"""
-        self.config = AzureOpenAIConfig()
+        """Initialize Graphiti client with OpenAI"""
+        self.config = OpenAIConfig()
         self.neo4j_config = Neo4jConfig()
         self._graphiti: Optional[Graphiti] = None
         self._llm_client: Optional[OpenAIClient] = None
 
     async def initialize(self) -> None:
-        """Initialize Graphiti and Azure OpenAI clients"""
-        # Create Azure OpenAI async client for LLM
-        llm_azure_client = AsyncAzureOpenAI(
-            api_key=self.config.api_key,
-            api_version=self.config.api_version,
-            azure_endpoint=self.config.api_endpoint,
-        )
+        """Initialize Graphiti and OpenAI clients"""
+        # Build client kwargs for LLM - include base_url if using Azure endpoint
+        llm_client_kwargs = {"api_key": self.config.api_key}
+        if self.config.api_endpoint:
+            llm_client_kwargs["base_url"] = self.config.api_endpoint
 
-        # Create Azure OpenAI async client for embeddings
-        embedder_azure_client = AsyncAzureOpenAI(
-            api_key=self.config.api_key,
-            api_version=self.config.api_version,
-            azure_endpoint=self.config.api_endpoint,
-        )
+        # Build client kwargs for embeddings - support separate resource
+        embedder_client_kwargs = {
+            "api_key": self.config.embedding_api_key or self.config.api_key
+        }
+        if self.config.embedding_endpoint:
+            embedder_client_kwargs["base_url"] = self.config.embedding_endpoint
 
-        # Initialize LLM client for Graphiti with Azure deployment names
-        # LLMConfig is required to properly configure Azure OpenAI for Structured Outputs
-        azure_llm_config = LLMConfig(
-            model=self.config.chat_deployment_name,
-            small_model=self.config.chat_deployment_name,
+        # Create OpenAI async client for LLM
+        llm_client = AsyncOpenAI(**llm_client_kwargs)
+
+        # Create OpenAI async client for embeddings (may use different resource)
+        embedder_client = AsyncOpenAI(**embedder_client_kwargs)
+
+        # Initialize LLM client for Graphiti with OpenAI model IDs
+        # LLMConfig is required to properly configure OpenAI for Structured Outputs
+        llm_config = LLMConfig(
+            model=self.config.chat_model,
+            small_model=self.config.chat_model,
         )
         self._llm_client = OpenAIClient(
-            config=azure_llm_config,
-            client=llm_azure_client
+            config=llm_config,
+            client=llm_client
         )
 
         # Initialize embedder for Graphiti
         embedder = OpenAIEmbedder(
-            client=embedder_azure_client,
+            client=embedder_client,
             config=OpenAIEmbedderConfig(
-                model=self.config.embedding_deployment_name,
-                deployment_id=self.config.embedding_deployment_name,
+                embedding_model=self.config.embedding_model,
             ),
         )
 
-        # Initialize cross_encoder (reranker) for Azure OpenAI
+        # Initialize cross_encoder (reranker) for OpenAI
         cross_encoder = OpenAIRerankerClient(
-            config=azure_llm_config,
-            client=llm_azure_client
+            config=llm_config,
+            client=llm_client
         )
 
-        # Initialize Graphiti with Azure OpenAI for all components
+        # Initialize Graphiti with OpenAI for all components
         self._graphiti = Graphiti(
             uri=self.neo4j_config.uri,
             user=self.neo4j_config.user,
@@ -168,14 +171,17 @@ class GraphitiMemoryClient:
                 user_id=user_id,
             )
 
-            if not search_results or not search_results.get("results"):
+            # search_results is a list from Graphiti
+            if not search_results:
                 return "No relevant memories found."
 
             # Format search results into a context string
             context_parts = ["Relevant memories:"]
-            for result in search_results.get("results", []):
+            for result in search_results:
                 if isinstance(result, dict):
-                    context_parts.append(f"- {result.get('text', result)}")
+                    # Extract text from result - could be in different formats
+                    text = result.get('content') or result.get('text') or result.get('name') or str(result)
+                    context_parts.append(f"- {text}")
                 else:
                     context_parts.append(f"- {result}")
 

@@ -1,12 +1,12 @@
-"""Main agent implementation with memory, web search, and Azure OpenAI function calling"""
+"""Main agent implementation with memory, web search, and OpenAI function calling"""
 
 import json
 import logging
 from datetime import datetime
 from typing import Optional
-from openai import AsyncAzureOpenAI, APIError, APIConnectionError
+from openai import AsyncOpenAI, APIError, APIConnectionError
 
-from src.config import AzureOpenAIConfig, AgentConfig
+from src.config import OpenAIConfig, AgentConfig
 from src.graphiti_client import GraphitiMemory
 from src.tools import ToolRegistry
 from src.logging_config import get_logger
@@ -21,19 +21,20 @@ class MemoryAgent:
         """Initialize the agent with optional event loop"""
         from src.graphiti_client import GraphitiMemoryClient
 
-        self.config = AzureOpenAIConfig()
+        self.config = OpenAIConfig()
         self.agent_config = AgentConfig()
 
-        # Initialize Azure OpenAI client
+        # Initialize OpenAI client
         try:
-            self.llm_client = AsyncAzureOpenAI(
-                api_key=self.config.api_key,
-                api_version=self.config.api_version,
-                azure_endpoint=self.config.api_endpoint,
-            )
-            logger.info("Azure OpenAI client initialized successfully")
+            # Build client kwargs - include base_url if using Azure endpoint
+            client_kwargs = {"api_key": self.config.api_key}
+            if self.config.api_endpoint:
+                client_kwargs["base_url"] = self.config.api_endpoint
+
+            self.llm_client = AsyncOpenAI(**client_kwargs)
+            logger.info("OpenAI client initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize Azure OpenAI client: {e}", exc_info=True)
+            logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
             raise RuntimeError(f"Cannot initialize LLM client: {str(e)}")
 
         # Initialize async memory client (for use within async methods)
@@ -134,10 +135,9 @@ You have access to the web_search function - use it intelligently when needed.""
             try:
                 # Build request kwargs
                 kwargs = {
-                    "model": self.config.chat_deployment_name,
+                    "model": self.config.chat_model,
                     "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 1000,
+                    "max_completion_tokens": 1000,
                 }
 
                 # Add tools if provided
@@ -217,10 +217,9 @@ You have access to the web_search function - use it intelligently when needed.""
         # Get final response from LLM with tool results
         try:
             response = await self.llm_client.chat.completions.create(
-                model=self.config.chat_deployment_name,
+                model=self.config.chat_model,
                 messages=messages,
-                temperature=0.7,
-                max_tokens=1000,
+                max_completion_tokens=1000,
             )
 
             final_content = response.choices[0].message.content

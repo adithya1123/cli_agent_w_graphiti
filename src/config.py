@@ -9,21 +9,22 @@ env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(env_path)
 
 
-class AzureOpenAIConfig:
-    """Azure OpenAI Configuration"""
-    api_key: str = os.getenv("AZURE_OPENAI_API_KEY")
-    api_version: str = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
-    api_endpoint: str = os.getenv("AZURE_OPENAI_API_ENDPOINT")
-    chat_deployment_name: str = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME", "gpt-4o")
-    embedding_deployment_name: str = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "embedding-3-small")
+class OpenAIConfig:
+    """OpenAI Configuration - supports both openai.com and Azure OpenAI with v1 API"""
+    api_key: str = os.getenv("OPENAI_API_KEY")
+    api_endpoint: str = os.getenv("OPENAI_API_ENDPOINT", "")  # Azure endpoint for chat, empty for openai.com
+    chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o")
+
+    # Embedding configuration (can be different resource in Azure)
+    embedding_api_key: str = os.getenv("OPENAI_EMBEDDING_API_KEY", "")  # Leave empty to use main api_key
+    embedding_endpoint: str = os.getenv("OPENAI_EMBEDDING_ENDPOINT", "")  # Separate endpoint for embeddings
+    embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
     @classmethod
     def validate(cls) -> None:
-        """Validate required Azure OpenAI configuration"""
+        """Validate required OpenAI configuration"""
         if not cls.api_key:
-            raise ValueError("AZURE_OPENAI_API_KEY not set in environment")
-        if not cls.api_endpoint:
-            raise ValueError("AZURE_OPENAI_API_ENDPOINT not set in environment")
+            raise ValueError("OPENAI_API_KEY not set in environment")
 
 
 class Neo4jConfig:
@@ -37,16 +38,6 @@ class Neo4jConfig:
         """Validate required Neo4j configuration"""
         if not cls.uri:
             raise ValueError("NEO4J_URI not set in environment")
-
-
-class OpenAIConfig:
-    """OpenAI Configuration (for Graphiti LLM - supports Responses API)"""
-    api_key: str = os.getenv("OPENAI_API_KEY")
-
-    @classmethod
-    def validate(cls) -> bool:
-        """Validate OpenAI configuration (optional)"""
-        return bool(cls.api_key)
 
 
 class TavilyConfig:
@@ -68,6 +59,6 @@ class AgentConfig:
 
 def validate_all_configs() -> None:
     """Validate all required configurations"""
-    AzureOpenAIConfig.validate()
+    OpenAIConfig.validate()
     Neo4jConfig.validate()
     TavilyConfig.validate()

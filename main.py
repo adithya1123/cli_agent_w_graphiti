@@ -1,4 +1,4 @@
-"""CLI interface for the Memory Agent with Graphiti and Azure OpenAI"""
+"""CLI interface for the Memory Agent with Graphiti and OpenAI"""
 
 import sys
 import logging
@@ -15,7 +15,7 @@ def print_welcome():
     """Print welcome message"""
     print("\n" + "=" * 60)
     print("Welcome to the Memory Agent")
-    print("Azure OpenAI + Graphiti Temporal Knowledge Graph")
+    print("OpenAI + Graphiti Temporal Knowledge Graph")
     print("=" * 60)
     print("\nAvailable commands:")
     print("  Type your message to chat with the agent")
