@@ -1,0 +1,14 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+# User session data (contains user preferences, not to be committed)
+.agent_memory/
+last_user
+.env
