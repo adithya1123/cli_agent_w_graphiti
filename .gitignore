@@ -12,3 +12,4 @@ wheels/
 .agent_memory/
 last_user
 .env
+CLAUDE.md
