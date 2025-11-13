@@ -2,6 +2,8 @@
 
 import json
 import logging
+import asyncio
+from collections import deque
 from datetime import datetime
 from typing import Optional
 from openai import AsyncOpenAI, APIError, APIConnectionError
@@ -60,8 +62,15 @@ class MemoryAgent:
         # User ID for tracking conversations
         self.user_id = user_id or "default_user"
 
-        # Conversation history for context window
-        self.conversation_history: list[dict] = []
+        # Conversation history for context window (OPTIMIZATION: Use deque with maxlen for automatic size management)
+        history_limit = self.agent_config.conversation_history_limit
+        self.conversation_history: deque = deque(maxlen=history_limit * 2)  # *2 for user+assistant pairs
+
+        # Cache base system prompt (OPTIMIZATION: Avoid rebuilding on every message)
+        self._base_system_prompt = self._create_system_prompt()
+
+        # Mark if memory initialization has been performed
+        self._memory_initialized = False
 
         logger.info(f"Agent initialized for user: {self.user_id}")
 
@@ -110,19 +119,18 @@ You have access to the web_search function - use it intelligently when needed.""
         Returns:
             Dict with 'content' (str) and 'tool_calls' (list or None)
         """
-        # Build messages for the API
-        system_message = self._create_system_prompt()
+        # Build messages for the API (OPTIMIZATION: Use cached system prompt)
+        system_message = self._base_system_prompt
 
         if context:
-            system_message += f"\n\nContext from your memories:\n{context}"
+            system_message = f"{self._base_system_prompt}\n\nContext from your memories:\n{context}"
 
         messages = [
             {"role": "system", "content": system_message},
         ]
 
-        # Add conversation history (keep last N messages)
-        history_limit = self.agent_config.conversation_history_limit
-        for msg in self.conversation_history[-history_limit:]:
+        # Add conversation history (OPTIMIZATION: deque automatically manages size)
+        for msg in self.conversation_history:
             messages.append(msg)
 
         # Add current user message
@@ -242,14 +250,21 @@ You have access to the web_search function - use it intelligently when needed.""
         if not user_message or not user_message.strip():
             return "Please provide a message."
 
+        # OPTIMIZATION: Initialize memory once at the start (not on every message)
+        if self.memory_available and not self._memory_initialized:
+            try:
+                if not self.memory_client._graphiti:
+                    await self.memory_client.initialize()
+                self._memory_initialized = True
+                logger.debug("Memory client initialized")
+            except Exception as e:
+                logger.warning(f"Memory initialization failed: {e}")
+                self.memory_available = False
+
         # Search memory for relevant context
         context = ""
         if self.memory_available:
             try:
-                # Initialize memory client if needed (first time)
-                if not self.memory_client._graphiti:
-                    await self.memory_client.initialize()
-
                 context = await self.memory_client.get_context_for_query(
                     query=user_message,
                     user_id=self.user_id,
@@ -267,18 +282,17 @@ You have access to the web_search function - use it intelligently when needed.""
         # Process tool calls if the LLM decided to use them
         final_response = ai_result["content"]
         if ai_result["tool_calls"]:
-            # Build messages for tool handling
-            system_message = self._create_system_prompt()
+            # OPTIMIZATION: Build messages for tool handling once
+            system_message = self._base_system_prompt
             if context:
-                system_message += f"\n\nContext from your memories:\n{context}"
+                system_message = f"{self._base_system_prompt}\n\nContext from your memories:\n{context}"
 
             messages = [
                 {"role": "system", "content": system_message},
             ]
 
             # Add conversation history
-            history_limit = self.agent_config.conversation_history_limit
-            for msg in self.conversation_history[-history_limit:]:
+            for msg in self.conversation_history:
                 messages.append(msg)
 
             # Add current user message
@@ -308,21 +322,25 @@ You have access to the web_search function - use it intelligently when needed.""
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": final_response})
 
-        # Store in knowledge graph as a new episode with user isolation (non-critical)
+        # OPTIMIZATION: Store episode asynchronously (non-blocking, fire-and-forget)
+        # This returns the response immediately without waiting for Neo4j storage
         if self.memory_available:
             try:
                 episode_body = f"User: {user_message}\nAgent: {final_response}"
-                await self.memory_client.add_episode(
-                    name=f"conversation_{datetime.now().isoformat()}",
-                    episode_body=episode_body,
-                    source="agent_conversation",
-                    source_description=f"Conversation turn between user and {self.agent_config.name}",
-                    reference_time=datetime.now(),
-                    group_id=self.user_id,  # User isolation via group_id
+                # Schedule episode storage without blocking the response
+                asyncio.create_task(
+                    self.memory_client.add_episode(
+                        name=f"conversation_{datetime.now().isoformat()}",
+                        episode_body=episode_body,
+                        source="agent_conversation",
+                        source_description=f"Conversation turn between user and {self.agent_config.name}",
+                        reference_time=datetime.now(),
+                        group_id=self.user_id,  # User isolation via group_id
+                    )
                 )
-                logger.debug("Conversation episode stored in knowledge graph")
+                logger.debug("Conversation episode storage scheduled (non-blocking)")
             except Exception as e:
-                logger.warning(f"Could not store episode in knowledge graph: {e}")
+                logger.warning(f"Could not schedule episode storage: {e}")
         else:
             logger.debug("Memory system unavailable; conversation episode not stored")
 

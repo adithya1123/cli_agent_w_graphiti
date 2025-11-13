@@ -1,6 +1,7 @@
 """Graphiti client wrapper for temporal knowledge graph memory with OpenAI"""
 
 import logging
+import hashlib
 from datetime import datetime
 from typing import Optional, Any
 import asyncio
@@ -29,12 +30,19 @@ class EpisodeType(str, Enum):
 class GraphitiMemoryClient:
     """Wrapper around Graphiti for managing temporal knowledge graph memory"""
 
+    # Cache configuration
+    _CACHE_TTL_SECONDS = 300  # 5 minutes cache TTL
+    _MAX_CACHE_SIZE = 100  # Maximum number of cached queries
+
     def __init__(self):
         """Initialize Graphiti client with OpenAI"""
         self.config = OpenAIConfig()
         self.neo4j_config = Neo4jConfig()
         self._graphiti: Optional[Graphiti] = None
         self._llm_client: Optional[OpenAIClient] = None
+
+        # OPTIMIZATION: Search result caching with TTL
+        self._search_cache: dict[str, tuple[Any, float]] = {}  # query_hash -> (results, timestamp)
 
     async def initialize(self) -> None:
         """Initialize Graphiti and OpenAI clients"""
@@ -91,6 +99,15 @@ class GraphitiMemoryClient:
             cross_encoder=cross_encoder,
         )
 
+    def _generate_cache_key(self, query: str, num_results: int, user_id: Optional[str]) -> str:
+        """Generate a unique cache key for a search query"""
+        key_parts = f"{query}|{num_results}|{user_id or 'none'}"
+        return hashlib.md5(key_parts.encode()).hexdigest()
+
+    def _is_cache_valid(self, timestamp: float) -> bool:
+        """Check if cached entry is still valid based on TTL"""
+        return (datetime.now().timestamp() - timestamp) < self._CACHE_TTL_SECONDS
+
     async def add_episode(
         self,
         name: str,
@@ -141,9 +158,21 @@ class GraphitiMemoryClient:
         num_results: int = 5,
         user_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Search the knowledge graph for relevant information"""
+        """Search the knowledge graph for relevant information with caching"""
         if not self._graphiti:
             raise RuntimeError("Graphiti not initialized. Call initialize() first.")
+
+        # OPTIMIZATION: Check cache first
+        cache_key = self._generate_cache_key(query, num_results, user_id)
+        if cache_key in self._search_cache:
+            cached_results, timestamp = self._search_cache[cache_key]
+            if self._is_cache_valid(timestamp):
+                logger.debug(f"Cache hit for query: '{query[:40]}...' (user: {user_id})")
+                return cached_results
+            else:
+                # Expired, remove from cache
+                del self._search_cache[cache_key]
+                logger.debug(f"Cache expired for query: '{query[:40]}...'")
 
         try:
             # Use group_ids parameter (plural - Graphiti uses group_ids for user isolation)
@@ -152,6 +181,21 @@ class GraphitiMemoryClient:
                 num_results=num_results,
                 group_ids=[user_id] if user_id else None,  # Graphiti expects a list
             )
+
+            # OPTIMIZATION: Store in cache
+            current_time = datetime.now().timestamp()
+            self._search_cache[cache_key] = (results, current_time)
+
+            # Evict oldest entry if cache is full
+            if len(self._search_cache) > self._MAX_CACHE_SIZE:
+                oldest_key = min(
+                    self._search_cache.keys(),
+                    key=lambda k: self._search_cache[k][1]
+                )
+                del self._search_cache[oldest_key]
+                logger.debug("Cache full, evicted oldest entry")
+
+            logger.debug(f"Cache miss for query: '{query[:40]}...' (now cached)")
             return results
         except Exception as e:
             logger.error(f"Error searching knowledge graph: {e}", exc_info=True)
@@ -173,26 +217,35 @@ class GraphitiMemoryClient:
 
             # search_results is a list from Graphiti
             if not search_results:
-                return "No relevant memories found."
+                return ""  # OPTIMIZATION: Return empty string instead of message (agent can handle it)
 
-            # Format search results into a context string
-            context_parts = ["Relevant memories:"]
-            for result in search_results:
-                if isinstance(result, dict):
-                    # Extract text from result - could be in different formats
-                    text = result.get('content') or result.get('text') or result.get('name') or str(result)
-                    context_parts.append(f"- {text}")
-                else:
-                    context_parts.append(f"- {result}")
+            # OPTIMIZATION: Use list comprehension for faster formatting
+            formatted_results = [
+                result.get('content') or result.get('text') or result.get('name') or str(result)
+                if isinstance(result, dict)
+                else str(result)
+                for result in search_results
+            ]
 
-            return "\n".join(context_parts)
+            # Only add prefix if we have results
+            if formatted_results:
+                return "Relevant memories:\n- " + "\n- ".join(formatted_results)
+            return ""
 
         except Exception as e:
             logger.error(f"Error getting context: {e}", exc_info=True)
-            return "Error retrieving memories."
+            return ""  # OPTIMIZATION: Return empty string on error (graceful degradation)
+
+    def clear_search_cache(self) -> None:
+        """Clear the search result cache (useful for memory management)"""
+        cache_size = len(self._search_cache)
+        self._search_cache.clear()
+        logger.debug(f"Cleared search cache ({cache_size} entries removed)")
 
     async def close(self) -> None:
         """Close Graphiti and clean up resources"""
+        # Clear cache on shutdown
+        self.clear_search_cache()
         if self._graphiti:
             # Graphiti uses async context managers, but we'll try to close if available
             try:
