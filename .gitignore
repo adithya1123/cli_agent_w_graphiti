@@ -13,3 +13,7 @@ wheels/
 last_user
 .env
 CLAUDE.md
+
+# Neo4j persistent data (local bind mounts)
+neo4j/data/
+neo4j/logs/
