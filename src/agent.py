@@ -1,5 +1,6 @@
 """Main agent implementation with memory, web search, and OpenAI function calling"""
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -12,6 +13,17 @@ from src.tools import ToolRegistry
 from src.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+_ERROR_PREFIXES = (
+    "Connection error:",
+    "Authentication error:",
+    "Rate limited:",
+    "Deployment not found:",
+    "API error:",
+    "Error generating response:",
+    "Error: Could not get response",
+    "Error processing tool results:",
+)
 
 
 class MemoryAgent:
@@ -66,26 +78,28 @@ class MemoryAgent:
         logger.info(f"Agent initialized for user: {self.user_id}")
 
     def _get_tool_definitions(self) -> list:
-        """Get OpenAI function calling tool definitions"""
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "web_search",
-                    "description": "Search the web for current information when you need up-to-date facts, news, prices, or information beyond your training data",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The search query to find relevant information on the web",
-                            }
+        """Get OpenAI function calling tool definitions (built once, reused)"""
+        if not hasattr(self, "_tool_definitions"):
+            self._tool_definitions = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the web for current information when you need up-to-date facts, news, prices, or information beyond your training data",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "The search query to find relevant information on the web",
+                                }
+                            },
+                            "required": ["query"],
                         },
-                        "required": ["query"],
                     },
-                },
-            }
-        ]
+                }
+            ]
+        return self._tool_definitions
 
     def _create_system_prompt(self) -> str:
         """Create the system prompt for the agent"""
@@ -133,11 +147,13 @@ You have access to the web_search function - use it intelligently when needed.""
 
         while retry_count < max_retries:
             try:
-                # Build request kwargs
+                # Build request kwargs.
+                # Routing call: only needs to decide whether to answer or call a tool.
+                # 4000 tokens is sufficient — tool call JSON is tiny; direct answers are short.
                 kwargs = {
                     "model": self.config.chat_model,
                     "messages": messages,
-                    "max_completion_tokens": 1000,
+                    "max_completion_tokens": 4000,
                 }
 
                 # Add tools if provided
@@ -149,6 +165,11 @@ You have access to the web_search function - use it intelligently when needed.""
 
                 # Extract response content and tool calls
                 message = response.choices[0].message
+                logger.debug(
+                    f"Initial LLM: finish_reason={response.choices[0].finish_reason!r}, "
+                    f"content_len={len(message.content) if message.content else 0}, "
+                    f"tool_calls={len(message.tool_calls) if message.tool_calls else 0}"
+                )
                 result = {
                     "content": message.content,
                     "tool_calls": message.tool_calls if hasattr(message, "tool_calls") else None,
@@ -188,7 +209,17 @@ You have access to the web_search function - use it intelligently when needed.""
         if tool_name == "web_search":
             query = tool_args.get("query", "")
             logger.info(f"Executing web search with query: {query}")
-            return self.tools.call_tool("web_search", query=query)
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(self.tools.call_tool, "web_search", query=query, max_results=3),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Web search timed out for query: {query}")
+                return "Web search timed out. Please try again or rephrase your query."
+            except Exception as e:
+                logger.error(f"Web search failed: {e}", exc_info=True)
+                return f"Web search error: {str(e)}"
         else:
             logger.warning(f"Unknown tool requested: {tool_name}")
             return f"Unknown tool: {tool_name}"
@@ -200,11 +231,14 @@ You have access to the web_search function - use it intelligently when needed.""
         Returns:
             (final_response, updated_messages)
         """
-        # Execute all tool calls
-        for tool_call in tool_calls:
-            tool_result = await self._execute_tool_call(tool_call)
-
-            # Add tool result to messages
+        # Execute all tool calls in parallel
+        results = await asyncio.gather(
+            *[self._execute_tool_call(tc) for tc in tool_calls],
+            return_exceptions=True,
+        )
+        for tool_call, tool_result in zip(tool_calls, results):
+            if isinstance(tool_result, Exception):
+                tool_result = f"Tool error: {tool_result}"
             messages.append(
                 {
                     "tool_call_id": tool_call.id,
@@ -214,15 +248,25 @@ You have access to the web_search function - use it intelligently when needed.""
                 }
             )
 
-        # Get final response from LLM with tool results
+        # Get final response from LLM with tool results.
+        # Pass tool_choice="none" to FORCE a text response — prevents the model
+        # from looping back into tool-call mode (which would return content=None).
         try:
             response = await self.llm_client.chat.completions.create(
                 model=self.config.chat_model,
                 messages=messages,
-                max_completion_tokens=1000,
+                max_completion_tokens=16000,
+                tools=self._get_tool_definitions(),
+                tool_choice="none",
             )
 
-            final_content = response.choices[0].message.content
+            message = response.choices[0].message
+            logger.debug(
+                f"Synthesis LLM: finish_reason={response.choices[0].finish_reason!r}, "
+                f"content_len={len(message.content) if message.content else 0}, "
+                f"has_tool_calls={bool(message.tool_calls)}"
+            )
+            final_content = message.content or "I processed the search results but was unable to generate a response. Please try again."
             return final_content, messages
         except Exception as e:
             logger.error(f"Error getting final response after tool calls: {e}", exc_info=True)
@@ -250,12 +294,21 @@ You have access to the web_search function - use it intelligently when needed.""
                 if not self.memory_client._graphiti:
                     await self.memory_client.initialize()
 
-                context = await self.memory_client.get_context_for_query(
-                    query=user_message,
-                    user_id=self.user_id,
-                    num_results=5,
+                context = await asyncio.wait_for(
+                    self.memory_client.get_context_for_query(
+                        query=user_message,
+                        user_id=self.user_id,
+                        num_results=3,
+                    ),
+                    timeout=15.0,
                 )
+                # Cap context to avoid polluting the system prompt with stale/verbose memories
+                if len(context) > 1200:
+                    context = context[:1200] + "\n[...memories truncated]"
                 logger.debug(f"Retrieved {len(context)} characters of context from memory")
+            except asyncio.TimeoutError:
+                logger.warning("Memory search timed out after 15s; continuing without context")
+                context = ""
             except Exception as e:
                 logger.warning(f"Failed to retrieve context from memory: {e}")
                 context = ""  # Continue without context
@@ -267,27 +320,21 @@ You have access to the web_search function - use it intelligently when needed.""
         # Process tool calls if the LLM decided to use them
         final_response = ai_result["content"]
         if ai_result["tool_calls"]:
-            # Build messages for tool handling
+            # Build a lean message list for tool handling — no history needed.
+            # The synthesis call only needs: system + current user turn + tool results.
             system_message = self._create_system_prompt()
             if context:
                 system_message += f"\n\nContext from your memories:\n{context}"
 
             messages = [
                 {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message},
             ]
-
-            # Add conversation history
-            history_limit = self.agent_config.conversation_history_limit
-            for msg in self.conversation_history[-history_limit:]:
-                messages.append(msg)
-
-            # Add current user message
-            messages.append({"role": "user", "content": user_message})
 
             # Add the assistant response with tool calls
             messages.append({
                 "role": "assistant",
-                "content": ai_result["content"],
+                "content": ai_result["content"] or "",
                 "tool_calls": [
                     {
                         "id": tc.id,
@@ -304,29 +351,52 @@ You have access to the web_search function - use it intelligently when needed.""
             # Handle tool calls
             final_response, _ = await self._handle_tool_calls(ai_result["tool_calls"], messages)
 
-        # Add to conversation history
-        self.conversation_history.append({"role": "user", "content": user_message})
-        self.conversation_history.append({"role": "assistant", "content": final_response})
+        # Ensure we always have a string response
+        if not final_response:
+            final_response = "I was unable to generate a response. Please try again."
 
-        # Store in knowledge graph as a new episode with user isolation (non-critical)
+        # Add to conversation history (skip if response is an error string)
+        if not any(final_response.startswith(p) for p in _ERROR_PREFIXES):
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": final_response})
+        else:
+            logger.debug("Skipping history append: response is an error string")
+
+        # Store episode in the background (fire-and-forget) so the user gets their
+        # response immediately and Graphiti's LLM extraction doesn't compete with
+        # the next user turn for the rate-limit quota.
         if self.memory_available:
+            asyncio.ensure_future(
+                self._store_episode_background(user_message, final_response)
+            )
+
+        return final_response
+
+    async def _store_episode_background(self, user_message: str, final_response: str) -> None:
+        """Store a conversation episode with exponential-backoff retry on rate limit."""
+        episode_body = f"User: {user_message}\nAgent: {final_response}"
+        max_retries = 3
+        for attempt in range(max_retries):
             try:
-                episode_body = f"User: {user_message}\nAgent: {final_response}"
+                if attempt > 0:
+                    delay = 2 ** attempt  # 2 s, 4 s
+                    logger.debug(f"Retrying episode storage in {delay}s (attempt {attempt + 1})")
+                    await asyncio.sleep(delay)
                 await self.memory_client.add_episode(
                     name=f"conversation_{datetime.now().isoformat()}",
                     episode_body=episode_body,
                     source="agent_conversation",
                     source_description=f"Conversation turn between user and {self.agent_config.name}",
                     reference_time=datetime.now(),
-                    group_id=self.user_id,  # User isolation via group_id
+                    group_id=self.user_id,
                 )
                 logger.debug("Conversation episode stored in knowledge graph")
+                return
             except Exception as e:
-                logger.warning(f"Could not store episode in knowledge graph: {e}")
-        else:
-            logger.debug("Memory system unavailable; conversation episode not stored")
-
-        return final_response
+                if attempt < max_retries - 1:
+                    logger.debug(f"Episode storage attempt {attempt + 1} failed: {e}")
+                else:
+                    logger.warning(f"Could not store episode after {max_retries} attempts: {e}")
 
     def close(self) -> None:
         """Clean up resources"""

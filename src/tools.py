@@ -74,13 +74,15 @@ class WebSearchTool:
         if response.get("answer"):
             formatted_parts.append(f"Answer: {response['answer']}\n")
 
-        # Add search results
+        # Add search results (content capped to 300 chars each to limit token usage)
         if response.get("results"):
             formatted_parts.append("Sources:")
             for idx, result in enumerate(response["results"], 1):
                 title = result.get("title", "")
                 url = result.get("url", "")
                 content = result.get("content", "")
+                if len(content) > 300:
+                    content = content[:300] + "..."
                 formatted_parts.append(f"{idx}. {title}\n   URL: {url}\n   {content}\n")
 
         return "\n".join(formatted_parts) if formatted_parts else "No results found"

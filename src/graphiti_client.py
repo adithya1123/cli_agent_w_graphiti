@@ -259,8 +259,7 @@ class GraphitiMemory:
                 asyncio.ensure_future(
                     self._client.add_episode(
                         name, episode_body, source, source_description, reference_time, group_id
-                    ),
-                    loop=self._loop
+                    )
                 )
                 logger.debug("Episode storage scheduled (non-blocking in running event loop)")
             else:
