@@ -290,10 +290,6 @@ You have access to the web_search function - use it intelligently when needed.""
         context = ""
         if self.memory_available:
             try:
-                # Initialize memory client if needed (first time)
-                if not self.memory_client._graphiti:
-                    await self.memory_client.initialize()
-
                 context = await asyncio.wait_for(
                     self.memory_client.get_context_for_query(
                         query=user_message,
@@ -419,6 +415,12 @@ class SyncMemoryAgent:
 
             # Pass loop to async agent to avoid duplicate loop creation
             self._async_agent = MemoryAgent(user_id, loop=self._loop)
+
+            # Eagerly initialize Graphiti so all commands (not just process_message)
+            # have a ready memory client from the moment the agent starts up.
+            if self._async_agent.memory_available:
+                self._loop.run_until_complete(self._async_agent.memory_client.initialize())
+
             logger.info(f"SyncMemoryAgent initialized for user: {user_id}")
         except Exception as e:
             logger.error(f"Failed to initialize SyncMemoryAgent: {e}", exc_info=True)
