@@ -20,6 +20,11 @@ class OpenAIConfig:
     embedding_endpoint: str = os.getenv("OPENAI_EMBEDDING_ENDPOINT", "")  # Separate endpoint for embeddings
     embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
+    # Optional: separate model for Graphiti's internal LLM calls (entity extraction).
+    # Useful when the main chat model is a reasoning/o-series model that doesn't support
+    # structured outputs required by Graphiti. Falls back to chat_model if not set.
+    graphiti_llm_model: str = os.getenv("GRAPHITI_LLM_MODEL", "")
+
     @classmethod
     def validate(cls) -> None:
         """Validate required OpenAI configuration"""
