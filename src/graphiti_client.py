@@ -97,10 +97,22 @@ class GraphitiMemoryClient:
             cross_encoder=cross_encoder,
         )
 
-        # Note: Neo4jDriver.__init__ already schedules build_indices_and_constraints()
-        # as a background asyncio task via loop.create_task(). Calling it again here
-        # would race with that task and cause EquivalentSchemaRuleAlreadyExists errors.
-        logger.info("Graphiti client initialized (indices scheduled by Neo4jDriver)")
+        # Graphiti's Neo4jDriver.__init__ schedules build_indices_and_constraints() as a
+        # background task. Await it here so initialize() doesn't return until the Neo4j
+        # schema (indices + constraints) is fully ready. Without this, the first 1-2
+        # process_message() calls arrive before the schema exists and episode writes fail.
+        index_tasks = [
+            t for t in asyncio.all_tasks()
+            if 'build_indices_and_constraints' in repr(t)
+        ]
+        if index_tasks:
+            results = await asyncio.gather(*index_tasks, return_exceptions=True)
+            for r in results:
+                if isinstance(r, Exception) and 'already exists' not in str(r).lower():
+                    logger.warning(f"Index initialization warning: {r}")
+            logger.info("Graphiti indices and constraints ready")
+        else:
+            logger.info("Graphiti client initialized (index task already completed)")
 
     async def add_episode(
         self,
