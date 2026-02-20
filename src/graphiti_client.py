@@ -176,6 +176,41 @@ class GraphitiMemoryClient:
             logger.error(f"Error searching knowledge graph: {e}", exc_info=True)
             raise
 
+    async def list_users(self) -> list[dict]:
+        """List all users that have data in the knowledge graph with episode counts"""
+        if not self._graphiti:
+            raise RuntimeError("Graphiti not initialized. Call initialize() first.")
+        try:
+            result = await self._graphiti.driver.execute_query(
+                "MATCH (ep:Episodic) WHERE ep.group_id IS NOT NULL "
+                "RETURN ep.group_id AS user_id, COUNT(ep) AS episode_count "
+                "ORDER BY episode_count DESC"
+            )
+            # graphiti's execute_query may return an EagerResult or a list
+            rows = result if isinstance(result, list) else getattr(result, 'records', [])
+            return [{"user_id": r["user_id"], "episode_count": r["episode_count"]} for r in rows]
+        except Exception as e:
+            logger.error(f"Error listing users: {e}", exc_info=True)
+            raise
+
+    async def delete_user(self, user_id: str) -> dict:
+        """Delete all knowledge graph data for a user (episodes, entities, communities)"""
+        if not self._graphiti:
+            raise RuntimeError("Graphiti not initialized. Call initialize() first.")
+        try:
+            from graphiti_core.utils.maintenance.graph_data_operations import clear_data
+            users = await self.list_users()
+            user_info = next((u for u in users if u["user_id"] == user_id), None)
+            if not user_info:
+                return {"deleted": False, "reason": f"User '{user_id}' not found in knowledge graph"}
+            episode_count = user_info["episode_count"]
+            await clear_data(self._graphiti.driver, group_ids=[user_id])
+            logger.info(f"Deleted all knowledge graph data for user: {user_id}")
+            return {"deleted": True, "episodes_removed": episode_count}
+        except Exception as e:
+            logger.error(f"Error deleting user {user_id}: {e}", exc_info=True)
+            raise
+
     async def get_context_for_query(
         self,
         query: str,

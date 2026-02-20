@@ -434,6 +434,18 @@ class SyncMemoryAgent:
         """Clear conversation history (properly encapsulated)"""
         self._async_agent.conversation_history = []
 
+    def list_users(self) -> list[dict]:
+        """List all users with episode counts from the knowledge graph"""
+        return self._loop.run_until_complete(
+            self._async_agent.memory_client.list_users()
+        )
+
+    def delete_user(self, user_id: str) -> dict:
+        """Delete all knowledge graph data for a specific user"""
+        return self._loop.run_until_complete(
+            self._async_agent.memory_client.delete_user(user_id)
+        )
+
     def close(self) -> None:
         """Clean up resources"""
         try:

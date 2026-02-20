@@ -25,6 +25,8 @@ def print_welcome(user_id: str):
     print("  'help'          - Show help message")
     print("  'whoami'        - Show current user")
     print("  'switch'        - Switch to different user")
+    print("  'users'         - List all users with memory data")
+    print("  'delete user <id>' - Delete a user's memory data")
     print("  'visualize'     - Visualize knowledge graph (options: 7, 30, all)")
     print("  'clear'         - Clear conversation history")
     print("  'exit' or 'quit' - End the conversation")
@@ -36,6 +38,8 @@ def print_help():
     print("\nCommands:")
     print("  whoami              - Show current user")
     print("  switch              - Switch to different user")
+    print("  users               - List all users with memory data and episode counts")
+    print("  delete user <id>    - Permanently delete a user's memory data")
     print("  visualize [N]       - Visualize knowledge graph")
     print("                        '7' = last 7 days, '30' = last 30 days")
     print("                        'all' or empty = all time (default)")
@@ -94,6 +98,53 @@ def main():
                     agent = SyncMemoryAgent(user_id=user_id)
                     logger.info(f"User switched to: {user_id}")
                     print(f"✓ Switched to user: {user_id}\n")
+                    continue
+
+                if user_input.lower() == "users":
+                    try:
+                        users = agent.list_users()
+                        if not users:
+                            print("No users found in knowledge graph.\n")
+                        else:
+                            print(f"\n  {'User ID':<30} {'Episodes':>10}")
+                            print("  " + "-" * 42)
+                            for u in users:
+                                marker = "  ← current" if u["user_id"] == user_id else ""
+                                print(f"  {u['user_id']:<30} {u['episode_count']:>10}{marker}")
+                            print()
+                    except Exception as e:
+                        logger.error(f"Error listing users: {e}", exc_info=True)
+                        print(f"Error: Could not list users: {e}\n")
+                    continue
+
+                if user_input.lower().startswith("delete user"):
+                    parts = user_input.split(maxsplit=2)
+                    if len(parts) < 3:
+                        print("Usage: delete user <user_id>\n")
+                        continue
+                    target_user = parts[2].strip()
+                    try:
+                        confirm = input(f"Delete ALL memory data for '{target_user}'? This cannot be undone. [y/N]: ").strip().lower()
+                    except EOFError:
+                        confirm = ""
+                    if confirm != "y":
+                        print("Cancelled.\n")
+                        continue
+                    try:
+                        result = agent.delete_user(target_user)
+                        if result["deleted"]:
+                            print(f"✓ Deleted user '{target_user}' ({result['episodes_removed']} episodes removed).\n")
+                            if target_user == user_id:
+                                print("You deleted your own data. Please switch to a new user.")
+                                agent.close()
+                                user_id = UserSessionManager.prompt_for_user()
+                                agent = SyncMemoryAgent(user_id=user_id)
+                                print(f"✓ Switched to user: {user_id}\n")
+                        else:
+                            print(f"⚠️  {result['reason']}\n")
+                    except Exception as e:
+                        logger.error(f"Error deleting user: {e}", exc_info=True)
+                        print(f"Error: Could not delete user: {e}\n")
                     continue
 
                 # Handle visualize command
