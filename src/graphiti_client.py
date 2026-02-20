@@ -91,6 +91,10 @@ class GraphitiMemoryClient:
             cross_encoder=cross_encoder,
         )
 
+        # Build Neo4j indices and constraints (idempotent — safe to call on existing DB)
+        await self._graphiti.build_indices_and_constraints()
+        logger.info("Graphiti indices and constraints initialized")
+
     async def add_episode(
         self,
         name: str,
