@@ -56,11 +56,17 @@ class GraphitiMemoryClient:
         # Create OpenAI async client for embeddings (may use different resource)
         embedder_client = AsyncOpenAI(**embedder_client_kwargs)
 
+        # Use a dedicated model for Graphiti's internal LLM calls if configured.
+        # This matters when the main chat model is a reasoning/o-series model (e.g. gpt-5-mini-nlq)
+        # that may not support the structured JSON outputs Graphiti requires for entity extraction.
+        # Set GRAPHITI_LLM_MODEL in .env to a standard model (e.g. gpt-4o-mini) to isolate this.
+        graphiti_model = self.config.graphiti_llm_model or self.config.chat_model
+
         # Initialize LLM client for Graphiti with OpenAI model IDs
         # LLMConfig is required to properly configure OpenAI for Structured Outputs
         llm_config = LLMConfig(
-            model=self.config.chat_model,
-            small_model=self.config.chat_model,
+            model=graphiti_model,
+            small_model=graphiti_model,
         )
         self._llm_client = OpenAIClient(
             config=llm_config,
@@ -90,6 +96,19 @@ class GraphitiMemoryClient:
             embedder=embedder,
             cross_encoder=cross_encoder,
         )
+
+        # Ensure Neo4j schema (indices + constraints) is fully ready before returning.
+        # Graphiti's Neo4jDriver.__init__ schedules this as a background task, so calling
+        # it here may overlap — suppress "already exists" errors from prior runs or the
+        # concurrent background task finishing first.
+        try:
+            await self._graphiti.build_indices_and_constraints()
+            logger.info("Graphiti indices and constraints ready")
+        except Exception as e:
+            if 'already exists' not in str(e).lower():
+                logger.warning(f"Index initialization warning: {e}")
+            else:
+                logger.info("Graphiti indices and constraints ready (schema already existed)")
 
     async def add_episode(
         self,

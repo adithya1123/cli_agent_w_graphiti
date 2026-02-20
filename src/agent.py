@@ -390,13 +390,13 @@ You have access to the web_search function - use it intelligently when needed.""
                     reference_time=datetime.now(),
                     group_id=self.user_id,
                 )
-                logger.debug("Conversation episode stored in knowledge graph")
+                logger.info("Conversation episode stored in knowledge graph")
                 return
             except Exception as e:
                 if attempt < max_retries - 1:
-                    logger.debug(f"Episode storage attempt {attempt + 1} failed: {e}")
+                    logger.warning(f"Episode storage attempt {attempt + 1}/{max_retries} failed: {e}", exc_info=True)
                 else:
-                    logger.warning(f"Could not store episode after {max_retries} attempts: {e}")
+                    logger.error(f"Episode storage permanently failed after {max_retries} attempts: {e}", exc_info=True)
 
     def close(self) -> None:
         """Clean up resources"""
