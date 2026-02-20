@@ -1,256 +1,309 @@
-# Agent Usage Guide
+# Usage Guide
 
-## Quick Start
+Complete guide for setting up and using the Memory Agent from scratch.
 
-### Prerequisites
-- ✅ Neo4j running: `docker-compose ps` should show `neo4j` as "healthy"
-- ✅ `.env` configured with API keys
-- ✅ Dependencies installed: `uv sync`
+---
 
-### Start Using
+## Prerequisites
 
-**Option 1: Interactive CLI (Recommended for first time)**
+- **Python 3.13+** — check with `python --version`
+- **Docker Desktop** — for running Neo4j
+- **uv** — Python package manager ([install](https://docs.astral.sh/uv/getting-started/installation/))
+- **OpenAI API credentials** — Azure OpenAI or openai.com
+- **Tavily API key** — for web search ([tavily.com](https://tavily.com))
+
+---
+
+## First-Time Setup
+
+### 1. Clone and install dependencies
+
 ```bash
-uv run python main.py
+git clone <repo-url>
+cd cli_agent_w_graphiti
+uv sync
 ```
 
-**Option 2: Quick Demo**
+### 2. Configure environment variables
+
 ```bash
-uv run python quick_demo.py
+cp .env.example .env
 ```
 
-**Option 3: Python Script**
+Edit `.env` with your credentials:
+
+```env
+# ── LLM (Chat) ──────────────────────────────────────────────────────────────
+OPENAI_API_KEY=your-api-key
+OPENAI_CHAT_MODEL=gpt-4o
+
+# For Azure OpenAI — set the v1 endpoint:
+OPENAI_API_ENDPOINT=https://<resource>.cognitiveservices.azure.com/openai/v1/
+
+# ── Embeddings ───────────────────────────────────────────────────────────────
+# If using the same resource as chat, only set the model name:
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+
+# If using a separate Azure resource for embeddings (optional):
+OPENAI_EMBEDDING_ENDPOINT=https://<other-resource>.cognitiveservices.azure.com/openai/v1/
+OPENAI_EMBEDDING_API_KEY=separate-key-if-needed
+
+# ── Graphiti internal LLM (optional) ────────────────────────────────────────
+# Set this if your chat model is an o-series/reasoning model (e.g. o3, gpt-5-mini-nlq).
+# Graphiti needs structured outputs for entity extraction — reasoning models may not
+# support this. Point GRAPHITI_LLM_MODEL to a standard model (e.g. gpt-4o-mini).
+GRAPHITI_LLM_MODEL=
+
+# ── Neo4j ────────────────────────────────────────────────────────────────────
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=password
+
+# ── Web Search ───────────────────────────────────────────────────────────────
+TAVILY_API_KEY=your-tavily-key
+
+# ── Agent ────────────────────────────────────────────────────────────────────
+AGENT_NAME=Knowledge Graph Agent
+CONVERSATION_HISTORY_LIMIT=10
+```
+
+**Azure vs openai.com:**
+- **openai.com**: set `OPENAI_API_KEY` and `OPENAI_CHAT_MODEL`. Leave `OPENAI_API_ENDPOINT` empty.
+- **Azure OpenAI**: set `OPENAI_API_ENDPOINT` to the v1 endpoint format shown above. `OPENAI_CHAT_MODEL` is your deployment name (not the base model name).
+
+### 3. Start Neo4j
+
+```bash
+docker-compose up -d neo4j
+
+# Verify it's healthy (wait ~15 seconds after starting)
+docker-compose ps
+```
+
+You should see `(healthy)` in the STATUS column. Neo4j browser is available at http://localhost:7474 (user: `neo4j`, password: `password`).
+
+### 4. Run the agent
+
+```bash
+python main.py
+```
+
+On first run, you'll be prompted for a username. This is used to namespace your memory — any alphanumeric string works (e.g. `alice`, `adithya`). The agent saves your last username and offers it as the default on subsequent runs.
+
+---
+
+## Daily Usage
+
+```bash
+# Start the agent
+python main.py
+
+# Neo4j must be running — if you restarted Docker:
+docker-compose up -d neo4j
+```
+
+---
+
+## CLI Commands
+
+All commands are typed at the `You:` prompt.
+
+### Chat
+Just type your message. The agent retrieves relevant memories, decides whether to search the web, and responds.
+
+```
+You: What did I tell you about my project last week?
+You: What's the latest news on LLM benchmarks?
+You: Remember that I prefer concise answers
+```
+
+### User Management
+
+```
+users
+```
+Lists all users that have memory data in Neo4j, with episode counts. Current user is marked.
+
+```
+  User ID                          Episodes
+  ------------------------------------------
+  adithya                               142  ← current
+  alice                                  38
+```
+
+```
+delete user <user_id>
+```
+Permanently deletes all memory data (episodes, entities, relationships) for the specified user. Prompts for confirmation. If you delete yourself, you'll be prompted to choose a new user.
+
+```
+whoami
+```
+Shows your current username.
+
+```
+switch
+```
+Prompts for a new username and reinitializes the agent with that user's memory context.
+
+### Memory & History
+
+```
+clear
+```
+Clears the in-session conversation history (the last N messages sent to the LLM). Does **not** delete anything from the knowledge graph — long-term memory is unaffected.
+
+### Visualization
+
+```
+visualize          — all-time knowledge graph
+visualize 7        — last 7 days
+visualize 30       — last 30 days
+```
+
+Generates an interactive HTML file and opens it in your browser. Nodes represent entities and episodes; edges show relationships. Click and drag to explore, scroll to zoom.
+
+### Other
+
+```
+help    — show command list
+exit    — quit (also: quit, Ctrl+C)
+```
+
+---
+
+## Programmatic Usage
+
 ```python
 from src.agent import SyncMemoryAgent
 
-agent = SyncMemoryAgent(user_id="my_session")
-response = agent.process_message("Your message here")
+# Basic usage
+agent = SyncMemoryAgent(user_id="alice")
+response = agent.process_message("What do you know about me?")
 print(response)
 agent.close()
+
+# Context manager (auto-closes)
+with SyncMemoryAgent(user_id="alice") as agent:
+    r1 = agent.process_message("My name is Alice and I work in ML")
+    r2 = agent.process_message("What did I just tell you?")
+    print(r2)
+
+# Clear in-session history
+agent.clear_history()
+
+# List users (returns list of dicts: [{user_id, episode_count}])
+users = agent.list_users()
+
+# Delete a user
+result = agent.delete_user("alice")
+# result: {"deleted": True, "episodes_removed": 42}
 ```
 
-## Understanding the Output
+---
 
-### Logging Levels
+## Neo4j Management
 
-The agent logs information at different levels:
+### Fresh start (wipe all data)
 
-**INFO** (default) - High-level operations:
-```
-2025-11-11 19:45:32 - agent.agent - INFO - Agent initialized for user: my_user
-2025-11-11 19:45:33 - agent.tools - INFO - Executing web search with query: Claude AI
-```
-
-**DEBUG** - Detailed operations (use `setup_logging(log_level="DEBUG")`):
-```
-2025-11-11 19:45:34 - agent.agent - DEBUG - Retrieved 250 characters of context from memory
-2025-11-11 19:45:35 - agent.tools - DEBUG - Web search returned 5 results
+```bash
+docker-compose down
+rm -rf ./neo4j/data ./neo4j/logs
+docker-compose up -d neo4j
 ```
 
-**WARNING** - Non-critical issues:
-```
-2025-11-11 19:45:36 - agent.agent - WARNING - Could not store episode in knowledge graph
+### Inspect data in Neo4j browser
+
+Open http://localhost:7474 and run Cypher queries:
+
+```cypher
+-- See all episodes for a user
+MATCH (ep:Episodic {group_id: "alice"})
+RETURN ep ORDER BY ep.valid_at DESC LIMIT 20
+
+-- See entities for a user
+MATCH (ep:Episodic {group_id: "alice"})-[:MENTIONS]-(e:Entity)
+RETURN DISTINCT e.name, e.type LIMIT 50
+
+-- Count data per user
+MATCH (ep:Episodic)
+WHERE ep.group_id IS NOT NULL
+RETURN ep.group_id, COUNT(ep) AS episodes
+ORDER BY episodes DESC
+
+-- Count edges (should be > 0 after a few conversations)
+MATCH ()-[r:RELATES_TO]-() RETURN COUNT(r) AS edges
 ```
 
-**ERROR** - Critical issues:
-```
-2025-11-11 19:45:37 - agent.agent - ERROR - Failed to initialize Azure OpenAI client
-```
+### Restart Neo4j (without wiping data)
 
-### Example Session Walkthrough
-
-```
-===== CLI Starts =====
-Welcome to the Memory Agent
-Available commands: type 'help' for more info
-
-===== User Input =====
-You: What is Python?
-
-===== Agent Processing (with logging) =====
-[Logs show: Retrieving memory context...]
-[Logs show: Getting AI response from Azure...]
-[Logs show: Executing web search...]
-[Logs show: Conversation episode stored in memory...]
-
-===== Agent Response =====
-Agent: Python is a high-level programming language...
-
-===== Next Turn =====
-You: Tell me more about data science
-[Agent already has context from previous conversation]
+```bash
+docker-compose restart neo4j
 ```
 
-## Features Explained
-
-### 1. Web Search
-When the agent needs current information, it automatically searches the web:
-```
-You: What are the latest AI developments in 2025?
-[Agent searches web]
-Agent: Based on recent developments...
-```
-
-### 2. Memory (Temporal Knowledge Graph)
-The agent learns from your conversation:
-```
-You: I work with Python and JavaScript
-You: What languages should I learn next?
-[Agent remembers your previous statement]
-Agent: Based on your experience with Python and JavaScript...
-```
-
-### 3. Multi-turn Conversations
-The agent maintains context across multiple messages:
-```
-You: I'm interested in web development
-You: What framework would you recommend?
-[Agent remembers context from first message]
-```
-
-### 4. User Isolation
-Each user has separate memory (via group_id):
-```python
-user1_agent = SyncMemoryAgent(user_id="user1")  # Separate memory
-user2_agent = SyncMemoryAgent(user_id="user2")  # Different memory
-```
+---
 
 ## Troubleshooting
 
-### Issue: "Connection error: Could not reach Azure OpenAI service"
-**Solution:**
-- Check internet connection
-- Verify AZURE_OPENAI_API_ENDPOINT in .env
-- Agent will auto-retry (wait a moment)
+### Agent fails to start: "Graphiti not initialized" or Neo4j errors
 
-### Issue: "Deployment not found"
-**Solution:**
-- Update AZURE_OPENAI_CHAT_DEPLOYMENT_NAME to match your Azure resource
-- Check Azure Portal for correct deployment name
+```bash
+# Check Neo4j is running
+docker-compose ps
 
-### Issue: "Memory system initialization failed"
-**Solution:**
-- Ensure Neo4j is running: `docker-compose ps`
-- Check NEO4J_PASSWORD in .env matches docker-compose.yml
-- Neo4j logs: `docker-compose logs neo4j`
+# Check Neo4j logs
+docker-compose logs neo4j
 
-### Issue: Web search returns no results
-**Solution:**
-- This is normal - Tavily API returns no results for some queries
-- Agent will still respond based on its training data
-- Check TAVILY_API_KEY is valid
-
-### Issue: Nothing appearing on screen
-**Solution:**
-- Agent is processing (this can take 5-10 seconds for first call)
-- Check logs file: `logs/agent.log`
-- Run with DEBUG logging:
-
-```python
-from src.logging_config import setup_logging
-setup_logging(log_level="DEBUG")
+# Restart it
+docker-compose restart neo4j
 ```
 
-## Best Practices
+### "OPENAI_API_KEY not set" or API errors
 
-### 1. Always Close the Agent
+- Verify your `.env` file exists and has no typos
+- For Azure: ensure `OPENAI_API_ENDPOINT` ends with `/openai/v1/`
+- For Azure: `OPENAI_CHAT_MODEL` should be your **deployment name**, not the base model name (e.g. `my-gpt4o-deployment`, not `gpt-4o`)
+
+### Agent responds but memory doesn't persist
+
+- Check Neo4j is healthy: `docker-compose ps`
+- After a few conversations, verify episodes exist in Neo4j browser:
+  ```cypher
+  MATCH (ep:Episodic) RETURN COUNT(ep)
+  ```
+- Enable debug logging to see storage status:
+  ```python
+  # In main.py, change:
+  setup_logging(log_level="DEBUG")
+  ```
+
+### Reasoning model returns blank responses
+
+If using an o-series model (e.g. `o3`, `gpt-5-mini-nlq`), set `GRAPHITI_LLM_MODEL` to a standard model like `gpt-4o-mini` for Graphiti's entity extraction. Reasoning models consume their token budget on internal reasoning and may not support structured outputs.
+
+### Web search not triggering
+
+Web search is LLM-controlled — the model decides when it's needed. For queries about current events or recent data, it should trigger automatically. Verify `TAVILY_API_KEY` is set correctly.
+
+### Slow first response
+
+Normal — startup initializes Neo4j indices and the Graphiti schema. Subsequent responses are faster (~2–4 seconds total).
+
+---
+
+## Logging
+
+Log output goes to the console by default. Change the level in `main.py`:
+
 ```python
-agent = SyncMemoryAgent(user_id="session")
-try:
-    response = agent.process_message("Hi")
-finally:
-    agent.close()  # Ensures cleanup
+setup_logging(log_level="DEBUG")   # verbose
+setup_logging(log_level="WARNING") # quiet
 ```
 
-### 2. Reuse Agent Instance
-```python
-agent = SyncMemoryAgent(user_id="session")
-response1 = agent.process_message("First question")
-response2 = agent.process_message("Follow up")  # Context carried over
-agent.close()
+Key log lines to watch:
 ```
-
-### 3. Use Context Manager
-```python
-with SyncMemoryAgent(user_id="session") as agent:
-    response = agent.process_message("Hi")
-    # Auto closes
+INFO  - Graphiti indices and constraints ready          ← schema is ready
+INFO  - Agent initialized for user: alice              ← startup complete
+INFO  - Conversation episode stored                    ← memory saved (background)
+WARNING - Episode storage failed (attempt 1/3)         ← transient, will retry
 ```
-
-### 4. Clear History When Needed
-```python
-agent = SyncMemoryAgent(user_id="session")
-agent.process_message("First conversation")
-agent.clear_history()  # Clears local history
-agent.process_message("New conversation")  # Different context
-```
-
-## Advanced Usage
-
-### Enable Debug Logging
-```python
-from src.logging_config import setup_logging
-setup_logging(log_level="DEBUG", log_file="agent_debug.log")
-
-agent = SyncMemoryAgent(user_id="debug_session")
-response = agent.process_message("Test")
-```
-
-### Check Available Tools
-```python
-agent = SyncMemoryAgent(user_id="check_tools")
-tools = agent._async_agent.tools.list_tools()
-print(f"Available tools: {tools}")
-```
-
-### Access Memory System Status
-```python
-agent = SyncMemoryAgent(user_id="check_memory")
-if agent._async_agent.memory_available:
-    print("✅ Memory system is available")
-else:
-    print("⚠️ Memory system unavailable, agent will work without memory")
-```
-
-## Understanding Agent Capabilities
-
-### What the Agent Can Do ✅
-- Answer questions based on training data
-- Search the web for current information
-- Remember facts from conversation history
-- Maintain multi-turn conversations
-- Choose when to search the web automatically
-
-### What the Agent Cannot Do ❌
-- Make decisions outside conversation (no autonomous actions)
-- Access private databases (only Neo4j for conversation memory)
-- Execute code
-- Make API calls other than Azure OpenAI, Tavily, Neo4j
-- Access the internet directly (only through Tavily API)
-
-## Performance Tips
-
-1. **First call is slower** (~5-10 seconds)
-   - Azure OpenAI initialization, Neo4j connection
-   - Subsequent calls are faster (~2-3 seconds)
-
-2. **Longer conversations use more tokens**
-   - Agent keeps last 10 messages in context
-   - Use `clear_history()` if you notice slowdown
-
-3. **Web search adds latency** (~3-5 seconds extra)
-   - Agent decides when to search automatically
-   - You can't force/disable search
-
-4. **Memory lookup is usually fast** (<1 second)
-   - Unless Neo4j is slow or has connection issues
-
-## Next Steps
-
-1. **Try the CLI**: `uv run python main.py`
-2. **Run the demo**: `uv run python quick_demo.py`
-3. **Check logging**: Look for `logs/agent.log` after running
-4. **Test web search**: Ask about current events or recent technology
-5. **Test memory**: Ask follow-up questions about previous topics
-
-Happy exploring! 🚀
