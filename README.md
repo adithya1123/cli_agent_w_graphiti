@@ -107,6 +107,7 @@ python main.py
 | [USAGE_GUIDE.md](USAGE_GUIDE.md) | First-time setup, environment config, all usage patterns |
 | [GRAPHITI_MEMORY.md](GRAPHITI_MEMORY.md) | How Graphiti and episodic memory work in this agent |
 | [CLAUDE.md](CLAUDE.md) | Architecture details and development reference |
+| [AGENTS/](AGENTS/) | Structured agent memory — module contracts, hazards, playbooks, narratives |
 
 ---
 
